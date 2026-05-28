@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback } from "react";
 import {
   ReactFlow,
   Controls,
@@ -6,72 +6,87 @@ import {
   useNodesState,
   useEdgesState,
   addEdge,
-  Connection,
-  Edge,
-  Node,
+  type Connection,
+  type Edge,
+  type Node,
   MiniMap,
-} from '@xyflow/react';
-import ELK from 'elkjs/lib/elk.bundled.js';
-import '@xyflow/react/dist/style.css';
+  MarkerType,
+} from "@xyflow/react";
+import dagre from "@dagrejs/dagre";
+import "@xyflow/react/dist/style.css";
 
-import { FlowNode, FlowEdge } from './parseKB';
+import { FlowNode, FlowEdge } from "./parseKB";
 
 interface CanvasProps {
   initialNodes: FlowNode[];
   initialEdges: FlowEdge[];
 }
 
-const elk = new ELK();
+// n8n generally uses a Left-to-Right layout with wider nodes
+const nodeWidth = 250;
+const nodeHeight = 80;
 
-const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = 'TB') => {
-  const isHorizontal = dir === 'LR';
+const getLayoutedElements = (
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  direction = "LR",
+) => {
+  const isHorizontal = direction === "LR";
+  const localDagreGraph = new dagre.graphlib.Graph();
+  localDagreGraph.setDefaultEdgeLabel(() => ({}));
+  localDagreGraph.setGraph({ rankdir: direction, ranksep: 100, nodesep: 50 });
 
-  const graph = {
-    id: 'root',
-    layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': isHorizontal ? 'RIGHT' : 'DOWN',
-      'elk.spacing.nodeNode': '100',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '150',
-      'elk.edgeRouting': 'POLYLINE',
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+  nodes.forEach((node) => {
+    localDagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+  });
+
+  edges.forEach((edge) => {
+    localDagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(localDagreGraph);
+
+  const layoutedNodes = nodes.map((node) => {
+    const nodeWithPosition = localDagreGraph.node(node.id);
+
+    // We are shifting the dagre node position (anchor=center center) to the top left
+    // so it matches React Flow's node anchor point
+    return {
+      ...node,
+      position: {
+        x: nodeWithPosition.x - nodeWidth / 2,
+        y: nodeWithPosition.y - nodeHeight / 2,
+      },
+      // Ensure target and source positions fit the horizontal layout
+      targetPosition: isHorizontal ? "left" : "top",
+      sourcePosition: isHorizontal ? "right" : "bottom",
+    };
+  });
+
+  // Apply smoothstep styling for edges
+  const layoutedEdges = edges.map((edge) => ({
+    ...edge,
+    type: "smoothstep",
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      width: 20,
+      height: 20,
+      color: edge.style?.stroke ?? "#b1b1b7",
     },
-    children: nodes.map((n) => ({ ...n, width: 250, height: 80 })),
-    edges: edges.map((e) => ({ ...e, id: e.id, sources: [e.source], targets: [e.target] })),
-  };
+  }));
 
-  try {
-    const layoutedGraph = await elk.layout(graph);
-
-    const layoutedNodes = nodes.map((node) => {
-      const layoutNode = layoutedGraph.children?.find((n) => n.id === node.id);
-      return {
-        ...node,
-        position: {
-          x: layoutNode?.x || 0,
-          y: layoutNode?.y || 0,
-        },
-      };
-    });
-
-    return { nodes: layoutedNodes, edges };
-  } catch (error) {
-    console.error("ELK Layout Error:", error);
-    return { nodes, edges };
-  }
+  return { nodes: layoutedNodes, edges: layoutedEdges };
 };
 
 export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([] as Node[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([] as Edge[]);
 
   useEffect(() => {
-    const applyLayout = async () => {
-      const { nodes: layoutedNodes, edges: layoutedEdges } = await getLayoutedElements(
-        initialNodes,
-        initialEdges,
-        'TB'
-      );
+    const applyLayout = () => {
+      // Changed from TB to LR (Left to Right) to match n8n
+      const { nodes: layoutedNodes, edges: layoutedEdges } =
+        getLayoutedElements(initialNodes, initialEdges, "LR");
 
       setNodes(layoutedNodes as Node[]);
       setEdges(layoutedEdges as Edge[]);
@@ -81,12 +96,21 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds: Edge[]) => addEdge(params, eds)),
+    (params: Connection) =>
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...params,
+            type: "smoothstep",
+          },
+          eds,
+        ),
+      ),
     [setEdges],
   );
 
   return (
-    <div style={{ width: '100%', height: '100%' }}>
+    <div style={{ width: "100%", height: "100vh" }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -94,21 +118,24 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
-        attributionPosition="bottom-right"
+        // Adding dot background common in node editors
+        minZoom={0.2}
       >
-        <Background gap={20} color="#e0e0e0" />
-        <Controls showInteractive={false} />
+        <Background color="#ccc" gap={16} />
+        <Controls />
         <MiniMap
           nodeColor={(node) => {
             switch (node.type) {
-              case 'input': return '#61dafb';
-              case 'output': return '#ff6b6b';
-              default: return '#c8e6c9';
+              case "input":
+                return "#61dafb";
+              case "output":
+                return "#ff6b6b";
+              default:
+                return "#c8e6c9";
             }
           }}
           maskColor="rgba(0, 0, 0, 0.1)"
-          style={{ background: '#f5f5f5' }}
+          style={{ background: "#f5f5f5" }}
         />
       </ReactFlow>
     </div>
