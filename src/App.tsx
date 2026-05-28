@@ -1,24 +1,34 @@
-import React from 'react';
-import logo from './logo.svg';
-import './App.css';
+import React, { useState } from 'react';
+import JsonUploader from './components/JsonUploader';
+import Canvas from './components/Canvas'; // Import it here
+import { parseKBToGraph, FlowNode, FlowEdge } from './components/parseKB';
 
 function App() {
+  const [nodes, setNodes] = useState<FlowNode[]>([]);
+  const [edges, setEdges] = useState<FlowEdge[]>([]);
+
+  const handleJsonLoaded = (data: any) => {
+    try {
+      const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data);
+      setNodes(newNodes);
+      setEdges(newEdges);
+    } catch (error) {
+      console.error(error);
+      alert("Invalid JSON format");
+    }
+  };
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+    <div style={{ fontFamily: 'sans-serif', margin: '20px' }}>
+      <h1>Knowledge Base Visualizer</h1>
+      <JsonUploader onJsonLoaded={handleJsonLoaded} />
+
+      {/* Render the Canvas only when nodes exist */}
+      {nodes.length > 0 ? (
+        <Canvas initialNodes={nodes} initialEdges={edges} />
+      ) : (
+        <p>Please upload a JSON file to see the KB Tree.</p>
+      )}
     </div>
   );
 }
