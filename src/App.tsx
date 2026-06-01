@@ -1,19 +1,24 @@
 import React, { useState } from 'react';
 import JsonUploader from './components/JsonUploader';
 import Canvas from './components/Canvas';
-import { parseKBToGraph, FlowNode, FlowEdge } from './components/parseKB';
+import { parseKBToGraph, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
 import './App.css';
 
 function App() {
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
   const [showUploader, setShowUploader] = useState(false);
+  const [rawJson, setRawJson] = useState<any>(null);
+  const [checkResult, setCheckResult] = useState<IntentCheckResult | null>(null);
 
   const handleJsonLoaded = (data: any) => {
     try {
       const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data);
       setNodes(newNodes);
       setEdges(newEdges);
+      setRawJson(data);
+      const result = checkAllIntentsAdded(data, newNodes);
+      setCheckResult(result);
       setShowUploader(false);
     } catch (error) {
       console.error(error);
@@ -27,6 +32,25 @@ function App() {
         <div className="app-header">
           <h1>Knowledge Base Visualizer</h1>
         </div>
+
+        {checkResult && (
+          <div className={`intent-check ${checkResult.allAdded ? 'all-added' : 'missing'}`}>
+            {checkResult.allAdded ? (
+              <span className="check-icon">✅</span>
+            ) : (
+              <span className="check-icon">⚠️</span>
+            )}
+            <span className="check-text">
+              {checkResult.addedIntents}/{checkResult.totalIntents} intents added
+              {!checkResult.allAdded && ` · ${checkResult.missingIntents.length} missing`}
+            </span>
+            {!checkResult.allAdded && (
+              <span className="missing-ids" title={checkResult.missingIntents.join(', ')}>
+                {checkResult.missingIntents.join(', ')}
+              </span>
+            )}
+          </div>
+        )}
 
         <button
           className="upload-toggle"

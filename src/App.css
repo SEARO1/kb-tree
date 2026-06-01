@@ -39,6 +39,50 @@ body {
   margin: 0;
 }
 
+/* Intent check badge (top-right) */
+.intent-check {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.intent-check.all-added {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.intent-check.missing {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.missing-ids {
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  background: rgba(0,0,0,0.08);
+  padding: 2px 8px;
+  border-radius: 10px;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.check-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.check-text {
+  white-space: nowrap;
+}
+
 /* Upload toggle button */
 .upload-toggle {
   background: #fff;
