@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from "react";
+import React, { useEffect, useCallback, useMemo } from "react";
 import {
   ReactFlow,
   Controls,
@@ -11,6 +11,8 @@ import {
   type Node,
   MiniMap,
   MarkerType,
+  ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
@@ -20,6 +22,8 @@ import { FlowNode, FlowEdge } from "./parseKB";
 interface CanvasProps {
   initialNodes: FlowNode[];
   initialEdges: FlowEdge[];
+  searchResults?: FlowNode[];
+  currentResultIndex?: number;
 }
 
 // n8n generally uses a Left-to-Right layout with wider nodes
@@ -78,13 +82,32 @@ const getLayoutedElements = (
   return { nodes: layoutedNodes, edges: layoutedEdges };
 };
 
-export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
+export default function Canvas({ initialNodes, initialEdges, searchResults = [], currentResultIndex = 0 }: CanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <CanvasInner
+        initialNodes={initialNodes}
+        initialEdges={initialEdges}
+        searchResults={searchResults}
+        currentResultIndex={currentResultIndex}
+      />
+    </ReactFlowProvider>
+  );
+}
+
+function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentResultIndex = 0 }: CanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([] as Edge[]);
+  const { setCenter, getNode } = useReactFlow();
+
+  const currentSearchNode = searchResults[currentResultIndex];
+
+  const highlightedNodeIds = useMemo(() => {
+    return new Set(searchResults.map(n => n.id));
+  }, [searchResults]);
 
   useEffect(() => {
     const applyLayout = () => {
-      // Changed from TB to LR (Left to Right) to match n8n
       const { nodes: layoutedNodes, edges: layoutedEdges } =
         getLayoutedElements(initialNodes, initialEdges, "LR");
 
@@ -94,6 +117,16 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
 
     applyLayout();
   }, [initialNodes, initialEdges, setNodes, setEdges]);
+
+  // Center on the current search result node
+  useEffect(() => {
+    if (currentSearchNode) {
+      const node = getNode(currentSearchNode.id);
+      if (node) {
+        setCenter(node.position.x + 125, node.position.y + 40, { duration: 500, zoom: 1.5 });
+      }
+    }
+  }, [currentSearchNode, setCenter, getNode]);
 
   const onConnect = useCallback(
     (params: Connection) =>
@@ -112,26 +145,36 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
   return (
     <div style={{ width: "100%", height: "100vh" }}>
       <ReactFlow
-        nodes={nodes}
+        nodes={nodes.map(node => ({
+          ...node,
+          style: highlightedNodeIds.has(node.id)
+            ? {
+                background: '#fef08a',
+                border: '2px solid #eab308',
+                borderRadius: '4px',
+                zIndex: 10,
+              }
+            : {},
+        }))}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         fitView
-        // Adding dot background common in node editors
         minZoom={0.2}
       >
         <Background color="#ccc" gap={16} />
         <Controls />
         <MiniMap
           nodeColor={(node) => {
+            if (node.id === currentSearchNode?.id) return '#eab308';
             switch (node.type) {
               case "input":
                 return "#61dafb";
               case "output":
                 return "#ff6b6b";
               default:
-                return "#c8e6c9";
+                return highlightedNodeIds.has(node.id) ? '#fef08a' : "#c8e6c9";
             }
           }}
           maskColor="rgba(0, 0, 0, 0.1)"

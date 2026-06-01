@@ -103,6 +103,83 @@ body {
   color: #61dafb;
 }
 
+/* Search container */
+.search-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-input {
+  padding: 8px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.search-input:focus {
+  border-color: #61dafb;
+}
+
+.search-btn {
+  padding: 8px 14px;
+  background: #61dafb;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.search-btn:hover {
+  background: #4fc9e3;
+}
+
+.search-results-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-btn {
+  padding: 4px 8px;
+  background: #f0f0f0;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #333;
+  cursor: pointer;
+}
+
+.nav-btn:hover {
+  background: #e0e0e0;
+}
+
+.result-counter {
+  font-size: 11px;
+  color: #666;
+  min-width: 40px;
+  text-align: center;
+}
+
+.clear-btn {
+  padding: 6px 10px;
+  background: #ff6b6b;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.clear-btn:hover {
+  background: #ff5252;
+}
+
 /* Uploader popup container */
 .uploader-popup {
   position: absolute;
