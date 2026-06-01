@@ -48,6 +48,8 @@ interface KBActionPayload {
   nohIntent?: string;
   followUpIntent?: string;
   redirectIntent?: string;
+  procId?: string;
+  args?: string;
   [key: string]: any;
 }
 
@@ -159,7 +161,7 @@ for (const action of actions) {
   const payload = normalizePayload(action.payload);
   if (!payload) continue;
 
-  const redirects = getActionRedirects(payload);
+  const redirects = getActionRedirects(payload, intentMap);
 
   for (const redirect of redirects) {
     if (!redirect.targetId) continue;
@@ -221,6 +223,8 @@ for (const action of actions) {
         strokeColor = '#f59e0b'; // Orange
       } else if (meta.methods.has('redirect')) {
         strokeColor = '#3b82f6'; // Blue
+      } else if (meta.methods.has('procArg')) {
+        strokeColor = '#8b5cf6'; // Purple
       }
 
       edges.push({
@@ -250,9 +254,24 @@ function normalizePayload(payload: KBAction['payload']): KBActionPayload | null 
   return payload;
 }
 
+function parseProcedureArgs(argsStr: string): Array<{ intentId: string; label: string }> {
+  const results: Array<{ intentId: string; label: string }> = [];
+  const regex = /(\w+IntentId):\s*["']([\w]+)["']/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(argsStr)) !== null) {
+    const key = match[1];
+    const intentId = match[2];
+    let label = key.replace(/([A-Z])/g, ' $1').trim(); // e.g. "successIntentId" -> "success Intent Id"
+    label = label.replace(/ Intent Id$/, '').trim();     // -> "success"
+    results.push({ intentId, label });
+  }
+  return results;
+}
+
 // Step 3: extract every redirect target ID from a single action payload
 function getActionRedirects(
   payload: KBActionPayload,
+  intentMap: Map<string, KBIntent>,
 ): Array<{ targetId: string; label: string; method: string }> {
   const redirects: Array<{ targetId: string; label: string; method: string }> = [];
 
@@ -302,6 +321,16 @@ function getActionRedirects(
     });
   }
 
+  // Parse procedure args string for intent IDs
+  if (payload.args && typeof payload.args === 'string') {
+    const parsedArgs = parseProcedureArgs(payload.args);
+    for (const { intentId, label } of parsedArgs) {
+      if (intentId && intentMap.has(intentId)) {
+        redirects.push({ targetId: intentId, label, method: 'procArg' });
+      }
+    }
+  }
+
   // Remove duplicates based on targetId AND label
   const seen = new Set<string>();
   return redirects.filter((r) => {
@@ -342,6 +371,41 @@ function compareEdgeLabel(a: string, b: string): number {
   if (isDigitA && !isDigitB) return -1;
   if (!isDigitA && isDigitB) return 1;
   return a.localeCompare(b);
+}
+
+// ─── Intent coverage check ────────────────────────────────────────────────────
+
+export interface IntentCheckResult {
+  allAdded: boolean;
+  totalIntents: number;
+  addedIntents: number;
+  missingIntents: string[];
+}
+
+/**
+ * Checks whether all intents from the KB JSON are present as nodes in the graph.
+ * An intent is considered "added" if it appears as a node (i.e., it has at least
+ * one incoming or outgoing edge in the action-based graph).
+ */
+export function checkAllIntentsAdded(
+  rawJson: any,
+  nodes: FlowNode[],
+): IntentCheckResult {
+  const kb = rawJson as KBJson;
+  const intents: KBIntent[] = kb.intents ?? [];
+
+  const nodeIds = new Set(nodes.map((n) => n.id));
+
+  const missingIntents = intents
+    .filter((i) => !nodeIds.has(i.intentId))
+    .map((i) => i.intentId);
+
+  return {
+    allAdded: missingIntents.length === 0,
+    totalIntents: intents.length,
+    addedIntents: intents.length - missingIntents.length,
+    missingIntents,
+  };
 }
 
 // ─── Layout: BFS depth from root intents, then column packing ────────────────
