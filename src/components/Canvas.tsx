@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useMemo } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -10,6 +10,8 @@ import {
   Edge,
   Node,
   MiniMap,
+  ReactFlowProvider,
+  useReactFlow,
 } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import '@xyflow/react/dist/style.css';
@@ -19,6 +21,8 @@ import { FlowNode, FlowEdge } from './parseKB';
 interface CanvasProps {
   initialNodes: FlowNode[];
   initialEdges: FlowEdge[];
+  searchResults?: FlowNode[];
+  currentResultIndex?: number;
 }
 
 const elk = new ELK();
@@ -61,9 +65,12 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
   }
 };
 
-export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
+function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentResultIndex = 0 }: CanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const { setCenter, getNode } = useReactFlow();
+
+  const currentSearchNode = searchResults[currentResultIndex];
 
   useEffect(() => {
     const applyLayout = async () => {
@@ -80,6 +87,20 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
     applyLayout();
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
+  // Center on the current search result node
+  useEffect(() => {
+    if (currentSearchNode) {
+      const node = getNode(currentSearchNode.id);
+      if (node) {
+        setCenter(node.position.x + 125, node.position.y + 40, { duration: 500, zoom: 1.5 });
+      }
+    }
+  }, [currentSearchNode, setCenter, getNode]);
+
+  const highlightedNodeIds = useMemo(() => {
+    return new Set(searchResults.map(n => n.id));
+  }, [searchResults]);
+
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds: Edge[]) => addEdge(params, eds)),
     [setEdges],
@@ -88,7 +109,17 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
-        nodes={nodes}
+        nodes={nodes.map(node => ({
+          ...node,
+          style: highlightedNodeIds.has(node.id)
+            ? {
+                background: '#fef08a',
+                border: '2px solid #eab308',
+                borderRadius: '4px',
+                zIndex: 10,
+              }
+            : {},
+        }))}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
@@ -101,10 +132,11 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
         <Controls showInteractive={false} />
         <MiniMap
           nodeColor={(node) => {
+            if (node.id === currentSearchNode?.id) return '#eab308';
             switch (node.type) {
               case 'input': return '#61dafb';
               case 'output': return '#ff6b6b';
-              default: return '#c8e6c9';
+              default: return highlightedNodeIds.has(node.id) ? '#fef08a' : '#c8e6c9';
             }
           }}
           maskColor="rgba(0, 0, 0, 0.1)"
@@ -112,5 +144,13 @@ export default function Canvas({ initialNodes, initialEdges }: CanvasProps) {
         />
       </ReactFlow>
     </div>
+  );
+}
+
+export default function Canvas(props: CanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <CanvasInner {...props} />
+    </ReactFlowProvider>
   );
 }
