@@ -1,14 +1,15 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import JsonUploader from './components/JsonUploader';
 import Canvas from './components/Canvas';
-import { parseKBToGraph, checkAllIntentsAdded, FlowNode, FlowEdge } from './components/parseKB';
+import { parseKBToGraph, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
 import './App.css';
 
 function App() {
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
-  const [rawJson, setRawJson] = useState<any>(null);
   const [showUploader, setShowUploader] = useState(false);
+  const [rawJson, setRawJson] = useState<any>(null);
+  const [checkResult, setCheckResult] = useState<IntentCheckResult | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FlowNode[]>([]);
   const [currentResultIndex, setCurrentResultIndex] = useState(0);
@@ -19,6 +20,8 @@ function App() {
       setNodes(newNodes);
       setEdges(newEdges);
       setRawJson(data);
+      const result = checkAllIntentsAdded(data, newNodes);
+      setCheckResult(result);
       setShowUploader(false);
       setSearchQuery('');
       setSearchResults([]);
@@ -27,11 +30,6 @@ function App() {
       alert("Invalid JSON format");
     }
   };
-
-  const intentCheckResult = useMemo(() => {
-    if (!rawJson || nodes.length === 0) return null;
-    return checkAllIntentsAdded(rawJson, nodes);
-  }, [rawJson, nodes]);
 
   const handleSearch = useCallback(() => {
     if (!searchQuery.trim()) {
@@ -86,6 +84,38 @@ function App() {
           <h1>Knowledge Base Visualizer</h1>
         </div>
 
+        {checkResult && (
+          <div className={`intent-check ${checkResult.allAdded ? 'all-added' : 'missing'}`}>
+            {checkResult.allAdded ? (
+              <span className="check-icon">✅</span>
+            ) : (
+              <span className="check-icon">⚠️</span>
+            )}
+            <span className="check-text">
+              {checkResult.addedIntents}/{checkResult.totalIntents} intents added
+              {!checkResult.allAdded && ` · ${checkResult.missingIntents.length} missing`}
+            </span>
+            {!checkResult.allAdded && (
+              <span className="missing-ids" title={checkResult.missingIntents.join(', ')}>
+                {checkResult.missingIntents.join(', ')}
+              </span>
+            )}
+          </div>
+        )}
+
+        <button
+          className="upload-toggle"
+          onClick={() => setShowUploader(!showUploader)}
+        >
+          {showUploader ? '▼ Hide Loader' : '▲ Load JSON'}
+        </button>
+
+        {showUploader && (
+          <div className="uploader-popup">
+            <JsonUploader onJsonLoaded={handleJsonLoaded} />
+          </div>
+        )}
+
         <div className="search-container">
           <input
             type="text"
@@ -109,37 +139,6 @@ function App() {
             <button className="clear-btn" onClick={clearSearch}>✕</button>
           )}
         </div>
-
-        <button
-          className="upload-toggle"
-          onClick={() => setShowUploader(!showUploader)}
-        >
-          {showUploader ? '▼ Hide Loader' : '▲ Load JSON'}
-        </button>
-
-        {showUploader && (
-          <div className="uploader-popup">
-            <JsonUploader onJsonLoaded={handleJsonLoaded} />
-          </div>
-        )}
-
-        {intentCheckResult && !intentCheckResult.allAdded && (
-          <div className="missing-intents-bar">
-            <span className="missing-intents-title">
-              ⚠ Missing ({intentCheckResult.addedIntents}/{intentCheckResult.totalIntents}):
-            </span>
-            <div className="missing-intents-list">
-              {intentCheckResult.missingIntents.slice(0, 20).map((id) => (
-                <span key={id} className="missing-intent-tag">{id}</span>
-              ))}
-              {intentCheckResult.missingIntents.length > 20 && (
-                <span className="missing-intent-more">
-                  +{intentCheckResult.missingIntents.length - 20} more
-                </span>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="main-content">
