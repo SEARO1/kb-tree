@@ -144,15 +144,12 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
-        nodes={nodes
-          // When an edge is selected, hide any node that is not part of the
-          // selection — show only the two endpoint nodes and the edge.
-          .filter(node => !clickActive || clickHighlightedNodeIds!.has(node.id))
-          .map(node => {
+        nodes={nodes.map(node => {
             const isSearchHit = highlightedNodeIds.has(node.id);
+            const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
 
-            if (clickActive) {
-              // Edge-selection active → cyan highlight on the two endpoints.
+            if (isClickHighlighted) {
+              // Edge-selection active and this node is an endpoint → cyan highlight.
               return {
                 ...node,
                 style: {
@@ -162,6 +159,16 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
                   boxShadow: '0 0 0 4px rgba(6, 182, 212, 0.25)',
                   zIndex: 10,
                 },
+              };
+            }
+
+            if (clickActive) {
+              // Edge-selection active but this node is NOT part of the selection
+              // — make it transparent (keep visible as a ghost).
+              const baseStyle = (node.style ?? {}) as React.CSSProperties;
+              return {
+                ...node,
+                style: { ...baseStyle, opacity: 0.15 },
               };
             }
 
@@ -179,18 +186,27 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
 
             return node;
           })}
-        edges={edges
-          // When an edge is selected, hide every edge except the selected one.
-          .filter(edge => !clickActive || clickHighlightedEdgeIds!.has(edge.id))
-          .map(edge => {
+        edges={edges.map(edge => {
             if (!clickActive) return edge;
-            // Keep original method color, bump width, no animation.
+
+            const isClickHighlighted = clickHighlightedEdgeIds!.has(edge.id);
             const baseStyle = (edge.style ?? {}) as React.CSSProperties;
+
+            if (isClickHighlighted) {
+              // Keep original method color, bump width, no animation.
+              return {
+                ...edge,
+                style: { ...baseStyle, strokeWidth: 3, opacity: 1 },
+                zIndex: 5,
+                animated: false,
+              } as Edge;
+            }
+
+            // Selection active but this edge is NOT the selected one —
+            // make it transparent.
             return {
               ...edge,
-              style: { ...baseStyle, strokeWidth: 3, opacity: 1 },
-              zIndex: 5,
-              animated: false,
+              style: { ...baseStyle, opacity: 0.1 },
             } as Edge;
           })}
         onNodesChange={onNodesChange}
