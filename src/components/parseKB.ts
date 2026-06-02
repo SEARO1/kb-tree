@@ -3,7 +3,7 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
-  data: { label: string; rawData?: any };
+  data: { label: string; rawData?: any; isFirstIntent?: boolean };
   type?: string;
 }
 
@@ -197,11 +197,23 @@ for (const action of actions) {
 
   const sortedUsedIntents = intents.filter(i => usedIntentIds.has(i.intentId));
 
+  // Identify the "first intent" — the entry-point of the flow.
+  // Heuristic: the root intent (parentId === 'ROOT' / null) with the
+  // lowest sortOrder among those that are actually used in the graph.
+  // Falls back to the first sorted intent if no explicit root is found.
+  const firstIntentId = pickFirstIntentId(sortedUsedIntents);
+
   for (const intent of sortedUsedIntents) {
+    const isFirst = intent.intentId === firstIntentId;
+    const arrow = isFirst ? '▶ ' : '';
     nodes.push({
       id: intent.intentId,
       position: { x: 0, y: 0 },
-      data: { label: `${intent.intentId}\n${intent.intentName}`, rawData: intent },
+      data: {
+        label: `${arrow}${intent.intentId}\n${intent.intentName}`,
+        rawData: intent,
+        isFirstIntent: isFirst,
+      },
       type: 'default',
     });
   }
@@ -362,6 +374,24 @@ function compareAction(a: KBAction, b: KBAction): number {
 
 function compareIntentId(a?: string, b?: string): number {
   return (a ?? '').localeCompare(b ?? '');
+}
+
+// Picks the "first intent" — the entry point of the flow.
+// Preference order:
+//   1. The root intent (parentId === 'ROOT' / null) with the lowest
+//      sortOrder, among intents in the graph.
+//   2. The intent with the lowest sortOrder overall (e.g. the very
+//      first intent in the KB).
+//   3. The first intent in the supplied list.
+// Returns null only when the list is empty.
+function pickFirstIntentId(sortedIntents: KBIntent[]): string | null {
+  if (sortedIntents.length === 0) return null;
+
+  const roots = sortedIntents.filter(
+    (i) => i.parentId === 'ROOT' || i.parentId == null,
+  );
+  const pool = roots.length > 0 ? roots : sortedIntents;
+  return pool[0].intentId;
 }
 
 // "[1]" < "[2]" < "noh" < "followUp" < "redirect"

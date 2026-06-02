@@ -104,6 +104,13 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     return new Set(searchResults.map(n => n.id));
   }, [searchResults]);
 
+  // The "first intent" (entry point of the flow) — the node that gets
+  // the ▶ arrow marker. Used to apply the entry-point visual style and
+  // to color it distinctly in the MiniMap.
+  const firstIntentNodeId = useMemo(() => {
+    return initialNodes.find(n => n.data?.isFirstIntent)?.id ?? null;
+  }, [initialNodes]);
+
   // Compute the highlighted-node set for the current click selection
   // (edge-only: just the two endpoints of the selected edge).
   const clickHighlightedNodeIds = useMemo(() => {
@@ -147,12 +154,15 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
         nodes={nodes.map(node => {
             const isSearchHit = highlightedNodeIds.has(node.id);
             const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
+            const isFirstIntent = node.id === firstIntentNodeId;
+            const baseStyle = (node.style ?? {}) as React.CSSProperties;
 
             if (isClickHighlighted) {
               // Edge-selection active and this node is an endpoint → cyan highlight.
               return {
                 ...node,
                 style: {
+                  ...baseStyle,
                   background: '#cffafe',
                   border: isSearchHit ? '2px solid #0e7490' : '2px solid #06b6d4',
                   borderRadius: '4px',
@@ -165,7 +175,6 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
             if (clickActive) {
               // Edge-selection active but this node is NOT part of the selection
               // — make it transparent (keep visible as a ghost).
-              const baseStyle = (node.style ?? {}) as React.CSSProperties;
               return {
                 ...node,
                 style: { ...baseStyle, opacity: 0.15 },
@@ -176,9 +185,26 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
               return {
                 ...node,
                 style: {
+                  ...baseStyle,
                   background: '#fef08a',
                   border: '2px solid #eab308',
                   borderRadius: '4px',
+                  zIndex: 10,
+                },
+              };
+            }
+
+            if (isFirstIntent) {
+              // First-intent (entry-point) treatment: gold background, amber
+              // border, soft glow, and the ▶ arrow prefix in the label.
+              return {
+                ...node,
+                style: {
+                  ...baseStyle,
+                  background: '#fef3c7',
+                  border: '2px solid #f59e0b',
+                  borderRadius: '4px',
+                  boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.25)',
                   zIndex: 10,
                 },
               };
@@ -222,6 +248,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
         <Controls showInteractive={false} />
         <MiniMap
           nodeColor={(node) => {
+            if (node.id === firstIntentNodeId) return '#f59e0b';
             if (node.id === currentSearchNode?.id) return '#eab308';
             if (clickActive && clickHighlightedNodeIds!.has(node.id)) return '#06b6d4';
             switch (node.type) {
