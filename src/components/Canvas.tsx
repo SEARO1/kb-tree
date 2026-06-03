@@ -148,6 +148,13 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     [setEdges],
   );
 
+  const handleMiniMapClick = useCallback(
+    (_event: React.MouseEvent, position: { x: number; y: number }) => {
+      setCenter(position.x, position.y, { duration: 200 });
+    },
+    [setCenter],
+  );
+
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
@@ -247,6 +254,9 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
         <Background gap={20} color="#e0e0e0" />
         <Controls showInteractive={false} />
         <MiniMap
+          pannable
+          zoomable
+          onClick={handleMiniMapClick}
           nodeColor={(node) => {
             if (node.id === firstIntentNodeId) return '#f59e0b';
             if (node.id === currentSearchNode?.id) return '#eab308';
