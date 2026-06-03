@@ -17,6 +17,7 @@ export interface FlowNode {
     memberCount?: number;
   };
   type?: string;
+  style?: any;
 }
 
 export interface FlowEdge {
