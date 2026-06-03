@@ -3,7 +3,13 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
-  data: { label: string; rawData?: any; isFirstIntent?: boolean };
+  data: {
+    label: string;
+    rawData?: any;
+    isFirstIntent?: boolean;
+    splitRole?: 'in' | 'out';
+    splitPairId?: string;
+  };
   type?: string;
 }
 
@@ -149,45 +155,48 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const intentMap = new Map<string, KBIntent>();
   for (const intent of intents) intentMap.set(intent.intentId, intent);
 
-// Add `methods: Set<string>` to track the method for the edge
-const adjacency = new Map<string, Map<string, { labels: Set<string>; methods: Set<string>; order: number }>>();
-const usedIntentIds = new Set<string>();
-let edgeOrder = 0;
+  // Add `methods: Set<string>` to track the method for the edge
+  const adjacency = new Map<
+    string,
+    Map<string, { labels: Set<string>; methods: Set<string>; order: number }>
+  >();
+  const usedIntentIds = new Set<string>();
+  let edgeOrder = 0;
 
-for (const action of actions) {
-  const sourceIntentId = action.intentId;
-  if (!sourceIntentId || !intentMap.has(sourceIntentId)) continue;
+  for (const action of actions) {
+    const sourceIntentId = action.intentId;
+    if (!sourceIntentId || !intentMap.has(sourceIntentId)) continue;
 
-  const payload = normalizePayload(action.payload);
-  if (!payload) continue;
+    const payload = normalizePayload(action.payload);
+    if (!payload) continue;
 
-  const redirects = getActionRedirects(payload, intentMap);
+    const redirects = getActionRedirects(payload, intentMap);
 
-  for (const redirect of redirects) {
-    if (!redirect.targetId) continue;
-    if (redirect.targetId === sourceIntentId) continue;
-    if (!intentMap.has(redirect.targetId)) continue;
+    for (const redirect of redirects) {
+      if (!redirect.targetId) continue;
+      if (redirect.targetId === sourceIntentId) continue;
+      if (!intentMap.has(redirect.targetId)) continue;
 
-    let outgoing = adjacency.get(sourceIntentId);
-    if (!outgoing) {
-      outgoing = new Map();
-      adjacency.set(sourceIntentId, outgoing);
+      let outgoing = adjacency.get(sourceIntentId);
+      if (!outgoing) {
+        outgoing = new Map();
+        adjacency.set(sourceIntentId, outgoing);
+      }
+
+      let entry = outgoing.get(redirect.targetId);
+      if (!entry) {
+        // Initialize the methods Set
+        entry = { labels: new Set(), methods: new Set(), order: edgeOrder++ };
+        outgoing.set(redirect.targetId, entry);
+      }
+
+      entry.labels.add(redirect.label);
+      entry.methods.add(redirect.method); // Save the method
+
+      usedIntentIds.add(sourceIntentId);
+      usedIntentIds.add(redirect.targetId);
     }
-
-    let entry = outgoing.get(redirect.targetId);
-    if (!entry) {
-      // Initialize the methods Set
-      entry = { labels: new Set(), methods: new Set(), order: edgeOrder++ };
-      outgoing.set(redirect.targetId, entry);
-    }
-
-    entry.labels.add(redirect.label);
-    entry.methods.add(redirect.method); // Save the method
-
-    usedIntentIds.add(sourceIntentId);
-    usedIntentIds.add(redirect.targetId);
   }
-}
 
   for (const intent of intents) {
     if ((intent.parentId === 'ROOT' || intent.parentId == null) && adjacency.has(intent.intentId)) {
@@ -203,16 +212,68 @@ for (const action of actions) {
   // Falls back to the first sorted intent if no explicit root is found.
   const firstIntentId = pickFirstIntentId(sortedUsedIntents);
 
+  const inboundCount = new Map<string, number>();
+  const outboundCount = new Map<string, number>();
+  for (const [source, targets] of adjacency) {
+    outboundCount.set(source, targets.size);
+    for (const target of targets.keys()) {
+      inboundCount.set(target, (inboundCount.get(target) ?? 0) + 1);
+    }
+  }
+
+  const splitIntentIds = new Set<string>();
   for (const intent of sortedUsedIntents) {
+    const inbound = inboundCount.get(intent.intentId) ?? 0;
+    const outbound = outboundCount.get(intent.intentId) ?? 0;
+    const splitByInbound = inbound >= 4 && outbound > 0;
+    const splitByOutbound = outbound >= 4 && inbound > 0;
+    if (splitByInbound || splitByOutbound) splitIntentIds.add(intent.intentId);
+  }
+
+  const getSplitNodeId = (intentId: string, role: 'in' | 'out') => {
+    return `${intentId}__${role}`;
+  };
+
+  for (const intent of sortedUsedIntents) {
+    const isSplit = splitIntentIds.has(intent.intentId);
     const isFirst = intent.intentId === firstIntentId;
     const arrow = isFirst ? '▶ ' : '';
+
+    if (!isSplit) {
+      nodes.push({
+        id: intent.intentId,
+        position: { x: 0, y: 0 },
+        data: {
+          label: `${arrow}${intent.intentId}\n${intent.intentName}`,
+          rawData: intent,
+          isFirstIntent: isFirst,
+        },
+        type: 'default',
+      });
+      continue;
+    }
+
     nodes.push({
-      id: intent.intentId,
+      id: getSplitNodeId(intent.intentId, 'in'),
       position: { x: 0, y: 0 },
       data: {
-        label: `${arrow}${intent.intentId}\n${intent.intentName}`,
+        label: `${arrow}${intent.intentId}\n${intent.intentName} (in)`,
         rawData: intent,
         isFirstIntent: isFirst,
+        splitRole: 'in',
+        splitPairId: intent.intentId,
+      },
+      type: 'default',
+    });
+
+    nodes.push({
+      id: getSplitNodeId(intent.intentId, 'out'),
+      position: { x: 0, y: 0 },
+      data: {
+        label: `${intent.intentId}\n${intent.intentName} (out)`,
+        rawData: intent,
+        splitRole: 'out',
+        splitPairId: intent.intentId,
       },
       type: 'default',
     });
@@ -239,10 +300,13 @@ for (const action of actions) {
         strokeColor = '#8b5cf6'; // Purple
       }
 
+      const sourceId = splitIntentIds.has(source) ? getSplitNodeId(source, 'out') : source;
+      const targetId = splitIntentIds.has(target) ? getSplitNodeId(target, 'in') : target;
+
       edges.push({
-        id: `${source}-${target}`,
-        source,
-        target,
+        id: `${sourceId}-${targetId}`,
+        source: sourceId,
+        target: targetId,
         type: 'straight',
         animated: false,
         label: [...meta.labels].join(', '),
@@ -251,6 +315,19 @@ for (const action of actions) {
         labelStyle: { fill: strokeColor, fontWeight: 700 } // Match text to line color
       });
     }
+  }
+
+  for (const intentId of splitIntentIds) {
+    const inId = getSplitNodeId(intentId, 'in');
+    const outId = getSplitNodeId(intentId, 'out');
+    edges.push({
+      id: `${inId}-${outId}-split-link`,
+      source: inId,
+      target: outId,
+      type: 'straight',
+      animated: false,
+      style: { stroke: '#9ca3af', strokeWidth: 1, strokeDasharray: '4 4' },
+    });
   }
 }
 
@@ -424,7 +501,14 @@ export function checkAllIntentsAdded(
   const kb = rawJson as KBJson;
   const intents: KBIntent[] = kb.intents ?? [];
 
-  const nodeIds = new Set(nodes.map((n) => n.id));
+  const nodeIds = new Set(
+    nodes.map((n) => {
+      if (n.data?.splitPairId) return n.data.splitPairId;
+      if (n.id.endsWith('__in')) return n.id.slice(0, -4);
+      if (n.id.endsWith('__out')) return n.id.slice(0, -5);
+      return n.id;
+    }),
+  );
 
   const missingIntents = intents
     .filter((i) => !nodeIds.has(i.intentId))
