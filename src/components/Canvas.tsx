@@ -140,23 +140,9 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     setSelectedEdgeId(null);
   }, []);
 
-  const handleNodeClick = useCallback(
-    (_evt: React.MouseEvent, node: Node) => {
-      const data = node.data as FlowNode['data'] | undefined;
-      if (!data?.splitPairId || !data.splitRole) return;
-
-      const counterpartRole = data.splitRole === 'in' ? 'out' : 'in';
-      const counterpartId = `${data.splitPairId}__${counterpartRole}`;
-      const counterpart = getNode(counterpartId);
-      if (!counterpart) return;
-
-      setCenter(counterpart.position.x + 125, counterpart.position.y + 40, {
-        duration: 400,
-        zoom: 1.4,
-      });
-    },
-    [getNode, setCenter],
-  );
+  const handleNodeClick = useCallback(() => {
+    return;
+  }, []);
 
   // Whether click-highlight is currently active.
   const clickActive = clickHighlightedNodeIds !== null;

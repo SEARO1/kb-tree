@@ -155,7 +155,6 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const intentMap = new Map<string, KBIntent>();
   for (const intent of intents) intentMap.set(intent.intentId, intent);
 
-  // Add `methods: Set<string>` to track the method for the edge
   const adjacency = new Map<
     string,
     Map<string, { labels: Set<string>; methods: Set<string>; order: number }>
@@ -185,13 +184,12 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
 
       let entry = outgoing.get(redirect.targetId);
       if (!entry) {
-        // Initialize the methods Set
         entry = { labels: new Set(), methods: new Set(), order: edgeOrder++ };
         outgoing.set(redirect.targetId, entry);
       }
 
       entry.labels.add(redirect.label);
-      entry.methods.add(redirect.method); // Save the method
+      entry.methods.add(redirect.method);
 
       usedIntentIds.add(sourceIntentId);
       usedIntentIds.add(redirect.targetId);
@@ -204,12 +202,7 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     }
   }
 
-  const sortedUsedIntents = intents.filter(i => usedIntentIds.has(i.intentId));
-
-  // Identify the "first intent" — the entry-point of the flow.
-  // Heuristic: the root intent (parentId === 'ROOT' / null) with the
-  // lowest sortOrder among those that are actually used in the graph.
-  // Falls back to the first sorted intent if no explicit root is found.
+  const sortedUsedIntents = intents.filter((intent) => usedIntentIds.has(intent.intentId));
   const firstIntentId = pickFirstIntentId(sortedUsedIntents);
 
   const inboundCount = new Map<string, number>();
@@ -230,8 +223,8 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     if (splitByInbound || splitByOutbound) splitIntentIds.add(intent.intentId);
   }
 
-  const getSplitNodeId = (intentId: string, role: 'in' | 'out') => {
-    return `${intentId}__${role}`;
+  const getSplitNodeId = (intentId: string, role: 'in' | 'out', index: number) => {
+    return `${intentId}__${role}__${index}`;
   };
 
   for (const intent of sortedUsedIntents) {
@@ -253,55 +246,74 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
       continue;
     }
 
-    nodes.push({
-      id: getSplitNodeId(intent.intentId, 'in'),
-      position: { x: 0, y: 0 },
-      data: {
-        label: `${arrow}${intent.intentId}\n${intent.intentName} (in)`,
-        rawData: intent,
-        isFirstIntent: isFirst,
-        splitRole: 'in',
-        splitPairId: intent.intentId,
-      },
-      type: 'default',
-    });
+    const inboundTotal = inboundCount.get(intent.intentId) ?? 0;
+    const outboundTotal = outboundCount.get(intent.intentId) ?? 0;
 
-    nodes.push({
-      id: getSplitNodeId(intent.intentId, 'out'),
-      position: { x: 0, y: 0 },
-      data: {
-        label: `${intent.intentId}\n${intent.intentName} (out)`,
-        rawData: intent,
-        splitRole: 'out',
-        splitPairId: intent.intentId,
-      },
-      type: 'default',
-    });
+    for (let index = 1; index <= inboundTotal; index += 1) {
+      const prefix = isFirst && index === 1 ? arrow : '';
+      nodes.push({
+        id: getSplitNodeId(intent.intentId, 'in', index),
+        position: { x: 0, y: 0 },
+        data: {
+          label: `${prefix}${intent.intentId}\n${intent.intentName} (in ${index})`,
+          rawData: intent,
+          isFirstIntent: isFirst && index === 1,
+          splitRole: 'in',
+          splitPairId: intent.intentId,
+        },
+        type: 'default',
+      });
+    }
+
+    for (let index = 1; index <= outboundTotal; index += 1) {
+      nodes.push({
+        id: getSplitNodeId(intent.intentId, 'out', index),
+        position: { x: 0, y: 0 },
+        data: {
+          label: `${intent.intentId}\n${intent.intentName} (out ${index})`,
+          rawData: intent,
+          splitRole: 'out',
+          splitPairId: intent.intentId,
+        },
+        type: 'default',
+      });
+    }
   }
+
+  const outboundIndexBySource = new Map<string, number>();
+  const inboundIndexByTarget = new Map<string, number>();
 
   for (const [source, targets] of adjacency) {
     const sortedTargets = [...targets.entries()].sort((a, b) => a[1].order - b[1].order);
 
     for (const [target, meta] of sortedTargets) {
-      
-      // Default color: gray
       let strokeColor = '#b1b1b7';
-      
-      // Determine color by method (prioritizing in this order if multiple exist)
+
       if (meta.methods.has('dtmf')) {
-        strokeColor = '#10b981'; // Green
+        strokeColor = '#10b981';
       } else if (meta.methods.has('noh')) {
-        strokeColor = '#f43f5e'; // Red
+        strokeColor = '#f43f5e';
       } else if (meta.methods.has('followUp')) {
-        strokeColor = '#f59e0b'; // Orange
+        strokeColor = '#f59e0b';
       } else if (meta.methods.has('redirect')) {
-        strokeColor = '#3b82f6'; // Blue
+        strokeColor = '#3b82f6';
       } else if (meta.methods.has('procArg')) {
-        strokeColor = '#8b5cf6'; // Purple
+        strokeColor = '#8b5cf6';
       }
 
-      const sourceId = splitIntentIds.has(source) ? getSplitNodeId(source, 'out') : source;
-      const targetId = splitIntentIds.has(target) ? getSplitNodeId(target, 'in') : target;
+      let sourceId = source;
+      if (splitIntentIds.has(source)) {
+        const nextIndex = (outboundIndexBySource.get(source) ?? 0) + 1;
+        outboundIndexBySource.set(source, nextIndex);
+        sourceId = getSplitNodeId(source, 'out', nextIndex);
+      }
+
+      let targetId = target;
+      if (splitIntentIds.has(target)) {
+        const nextIndex = (inboundIndexByTarget.get(target) ?? 0) + 1;
+        inboundIndexByTarget.set(target, nextIndex);
+        targetId = getSplitNodeId(target, 'in', nextIndex);
+      }
 
       edges.push({
         id: `${sourceId}-${targetId}`,
@@ -310,24 +322,11 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
         type: 'straight',
         animated: false,
         label: [...meta.labels].join(', '),
-        style: { stroke: strokeColor, strokeWidth: 2 }, // Apply React Flow styling
-        labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 }, // Optional: clean up label background
-        labelStyle: { fill: strokeColor, fontWeight: 700 } // Match text to line color
+        style: { stroke: strokeColor, strokeWidth: 2 },
+        labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 },
+        labelStyle: { fill: strokeColor, fontWeight: 700 },
       });
     }
-  }
-
-  for (const intentId of splitIntentIds) {
-    const inId = getSplitNodeId(intentId, 'in');
-    const outId = getSplitNodeId(intentId, 'out');
-    edges.push({
-      id: `${inId}-${outId}-split-link`,
-      source: inId,
-      target: outId,
-      type: 'straight',
-      animated: false,
-      style: { stroke: '#9ca3af', strokeWidth: 1, strokeDasharray: '4 4' },
-    });
   }
 }
 
