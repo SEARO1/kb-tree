@@ -32,98 +32,6 @@ of what was changed, why, and any mistakes to avoid repeating.
 modifications going forward.
 **Notes / Mistakes:** None yet — first entry.
 
-### 2026-06-01 · Click-to-highlight feature
-**Status:** Added
-**Files:** `src/components/Canvas.tsx`
-**Why:** User requested the ability to click a node or edge to highlight the
-node/line together with its related ancestors/descendants (for nodes) or
-its two endpoints (for edges), and dim/hide the rest of the graph. Only one
-selection at a time; clicking the same element again toggles it off.
-**What:**
-- Added two state vars in `CanvasInner`: `selectedNodeId` and
-  `selectedEdgeId` (only one is non-null at a time).
-- Built `childrenMap` and `ancestorsMap` via `useMemo`, derived from the
-  laid-out edges (BFS up to collect ancestors for every node).
-- Added `collectDescendants(startId)` (BFS downward, memoized via
-  `useCallback`).
-- Computed `clickHighlightedNodeIds` and `clickHighlightedEdgeIds` from
-  the current selection.
-- Wired `onNodeClick`, `onEdgeClick`, and `onPaneClick` handlers:
-  - Click node → set `selectedNodeId` (clears any edge selection).
-  - Click same node again → toggle off.
-  - Click edge → set `selectedEdgeId` (clears any node selection).
-  - Click empty pane → clear both.
-- Applied visual styles:
-  - Highlighted node: cyan background (`#cffafe`) + cyan border
-    (`#06b6d4`) + glow box-shadow. If also a search hit, keeps the yellow
-    border (`#0e7490`) accent.
-  - Highlighted edge: keeps its original method color, full opacity,
-    bumped `strokeWidth` to 3.
-  - Dimmed (non-highlighted while a selection is active): `opacity: 0.15`
-    for nodes, `opacity: 0.1` for edges.
-  - MiniMap shows highlighted nodes in cyan as well.
-**Notes / Mistakes:**
-- Pre-existing build warnings in `App.tsx` and `parseKB.ts`
-  (`useMemo`/`rawJson`/`compareEdgeLabel`/`layoutActionGraph` unused) —
-  not touched; will surface when `CI=true`.
-- `useState` was briefly unused after import; resolved once the new state
-  vars were added.
-- The BFS-upward ancestor computation handles nodes with multiple parents
-  correctly (set-based dedup).
-- No state lift to `App.tsx` — selection is purely a `Canvas`-level
-  concern. If a future feature needs cross-component awareness, this will
-  need to move up.
-
-### 2026-06-01 · Node-click dimming → full hide (match line-click)
-**Status:** Modified
-**Files:** `src/components/Canvas.tsx`
-**Why:** User feedback — the dimming-via-`opacity: 0.15` for non-selected
-nodes (and `0.1` for non-selected edges) still left them visible as ghosts.
-User wanted node-click to behave exactly like line-click: hide everything
-non-essential, only show the relevant nodes/edges.
-**What:**
-- Replaced the per-node/per-edge `.map` + opacity style with a `.filter`
-  step that drops non-selected items entirely when a click selection is
-  active. Now both node-click and edge-click render the same minimal
-  "essential" subgraph.
-- Removed the now-unused `isDimmed` variable and `style: { opacity }`
-  branches from the render path.
-- Animation is also forced off for highlighted edges to keep the look
-  consistent.
-- MiniMap stroke-width bumped to 2 to keep the cyan nodes visible at
-  minimap scale.
-**Notes / Mistakes:**
-- Side effect: search-hits that are NOT part of the click selection are
-  also hidden while a click selection is active. This is intentional
-  (matches the "show only essential" rule) and reverts when the selection
-  is cleared.
-- Build + ESLint both clean.
-
-### 2026-06-01 · Remove node-click highlight (KB tree architecture)
-**Status:** Removed
-**Files:** `src/components/Canvas.tsx`
-**Why:** After reconsidering the feature in light of the KB-tree
-architecture, the user decided node-click highlight doesn't fit. Only
-edge-click highlight is kept.
-**What:** Removed the node-click surface area from `CanvasInner`:
-- `selectedNodeId` state (and all references in `clickHighlightedNodeIds`,
-  `clickHighlightedEdgeIds`, `handleEdgeClick`, `handlePaneClick`).
-- The `childrenMap` / `ancestorsMap` BFS lookup and `collectDescendants`
-  callback (only used for node-click ancestors/descendants).
-- The `selectedNodeId` branches in `clickHighlightedNodeIds` and
-  `clickHighlightedEdgeIds` memos.
-- `handleNodeClick` callback.
-- `onNodeClick={handleNodeClick}` prop on `<ReactFlow>`.
-
-Kept (untouched): edge-click logic, search highlight, layout, mini-map,
-search-centering, connection handling, all CSS. No other files modified.
-**Notes / Mistakes:**
-- The cyan node-style branch in the render is still there because it now
-  applies to the two endpoint nodes of a selected edge (instead of an
-  arbitrary node's ancestors/descendants). It was renamed in the inline
-  comment to reflect that.
-- Build verified clean.
-
 ### 2026-06-01 · Edge-click highlight: hide → transparent
 **Status:** Modified
 **Files:** `src/components/Canvas.tsx`
@@ -198,9 +106,17 @@ specifically call out that node in the MiniMap.
   the existing layering convention.
 - "First intent" detection is purely static — it doesn't follow
   outgoing edges. If a KB has multiple root intents (no incoming
+  edges) and the user wants a different entry, the helper will
+  still pick the lowest-sortOrder root. Easy to swap to a
+  BFS-from-roots heuristic later if needed.
+- The `▶` arrow is part of the node's `label` string, not a
+  separate React Flow annotation — so it survives zoom, exports,
+  and React Flow's default text rendering without any custom
+  node-type work.
+- Build is clean (the only `eslint` errors are the pre-existing
+  unused `useMemo`/`rawJson`/`compareEdgeLabel`/`layoutActionGraph`
+  warnings, all already documented in earlier entries).
 
-<<<<<<< HEAD
-=======
 ### 2026-06-03 · Split high-degree intents into inbound/outbound halves
 **Status:** Added
 **Files:** `src/components/parseKB.ts`, `src/components/Canvas.tsx`
@@ -213,17 +129,6 @@ specifically call out that node in the MiniMap.
 **Notes / Mistakes:**
 - Split applies only in the action-based graph (not the tree layout).
 - The dashed `in -> out` link is purely visual and does not come from KB actions.
-  edges) and the user wants a different entry, the helper will
-  still pick the lowest-sortOrder root. Easy to swap to a
-  BFS-from-roots heuristic later if needed.
-- The `▶` arrow is part of the node's `label` string, not a
-  separate React Flow annotation — so it survives zoom, exports,
-  and React Flow's default text rendering without any custom
-  node-type work.
-- Build is clean (the only `eslint` errors are the pre-existing
-  unused `useMemo`/`rawJson`/`compareEdgeLabel`/`layoutActionGraph`
-  warnings, all already documented in earlier entries).
->>>>>>> layout_split
 
 ### 2026-06-02 · Make the MiniMap draggable to pan the main canvas
 **Status:** Added
