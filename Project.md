@@ -199,6 +199,31 @@ specifically call out that node in the MiniMap.
 - "First intent" detection is purely static — it doesn't follow
   outgoing edges. If a KB has multiple root intents (no incoming
 
+<<<<<<< HEAD
+=======
+### 2026-06-03 · Split high-degree intents into inbound/outbound halves
+**Status:** Added
+**Files:** `src/components/parseKB.ts`, `src/components/Canvas.tsx`
+**Why:** Large intents with many inbound/outbound connections are hard to read; split the node into two halves so edges are separated by direction.
+**What:**
+- Action-based graph: split intents when one side has >= 4 connections and the other side > 0. Create `__in`/`__out` nodes with `(in)`/`(out)` label suffixes.
+- Route inbound edges to the `__in` half and outbound edges from the `__out` half. Add a dashed link between halves.
+- Node click jumps between the two halves to quickly navigate the pair.
+- Missing-intent check now treats split halves as present by mapping them back to the base intent ID.
+**Notes / Mistakes:**
+- Split applies only in the action-based graph (not the tree layout).
+- The dashed `in -> out` link is purely visual and does not come from KB actions.
+  edges) and the user wants a different entry, the helper will
+  still pick the lowest-sortOrder root. Easy to swap to a
+  BFS-from-roots heuristic later if needed.
+- The `▶` arrow is part of the node's `label` string, not a
+  separate React Flow annotation — so it survives zoom, exports,
+  and React Flow's default text rendering without any custom
+  node-type work.
+- Build is clean (the only `eslint` errors are the pre-existing
+  unused `useMemo`/`rawJson`/`compareEdgeLabel`/`layoutActionGraph`
+  warnings, all already documented in earlier entries).
+>>>>>>> layout_split
 
 ### 2026-06-02 · Make the MiniMap draggable to pan the main canvas
 **Status:** Added
