@@ -3,7 +3,15 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
-  data: { label: string; rawData?: any; isFirstIntent?: boolean };
+  data: {
+    label: string;
+    rawData?: any;
+    isFirstIntent?: boolean;
+    // Hub-splitter metadata
+    isVirtual?: boolean;
+    parentHubId?: string;
+    hubSide?: 'in' | 'out';
+  };
   type?: string;
 }
 
@@ -14,9 +22,184 @@ export interface FlowEdge {
   type?: string;
   animated?: boolean;
   label?: string;
-  style?: any;         // Add this line to allow custom line colors
-  labelBgStyle?: any;  // Add this line to allow label background styling
-  labelStyle?: any;    // Add this line to allow label text styling
+  style?: any;
+  labelBgStyle?: any;
+  labelStyle?: any;
+  // Hub-splitter bridge flag
+  isSplitterBridge?: boolean;
+}
+
+// ─── Hub-splitter ──────────────────────────────────────────────────────────
+//
+// Splits any node whose in-degree or out-degree exceeds `maxFanout` into
+// a chain of "splitter" virtual nodes, each holding at most `maxFanout` edges.
+// This reduces visual fan-out in the ELK layout, significantly cutting edge
+// crossings for high-degree hub nodes.
+
+export interface SplitHubOptions {
+  /** Trigger: in-degree OR out-degree > this value. Default 5. */
+  threshold?: number;
+  /** Max real edges per splitter node. Default 3. */
+  maxFanout?: number;
+  /** Whether splitting is active. Default true. */
+  enabled?: boolean;
+}
+
+export function splitHubNodes(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  options: SplitHubOptions = {},
+): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  const { threshold = 5, maxFanout = 3, enabled = true } = options;
+  if (!enabled) return { nodes, edges };
+
+  // Work on copies
+  const nodeMap = new Map(nodes.map((n) => [n.id, { ...n, data: { ...n.data } }]));
+  let workEdges: FlowEdge[] = edges.map((e) => ({ ...e }));
+
+  // Only consider real edges (not bridge edges from a previous split pass)
+  const realEdges = () => workEdges.filter((e) => !e.isSplitterBridge);
+
+  // Compute in/out degree maps for each hub candidate
+  const inDeg = new Map<string, number>();
+  const outDeg = new Map<string, number>();
+  for (const node of nodeMap.values()) {
+    inDeg.set(node.id, 0);
+    outDeg.set(node.id, 0);
+  }
+  for (const e of realEdges()) {
+    inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
+    outDeg.set(e.source, (outDeg.get(e.source) ?? 0) + 1);
+  }
+
+  const hubIds = [...nodeMap.keys()].filter(
+    (id) => (inDeg.get(id) ?? 0) > threshold || (outDeg.get(id) ?? 0) > threshold,
+  );
+
+  for (const hubId of hubIds) {
+    const hub = nodeMap.get(hubId)!;
+
+    // ── incoming splitters ──────────────────────────────────────────────────
+    const incomingEdges = workEdges.filter((e) => e.target === hubId && !e.isSplitterBridge);
+    if (incomingEdges.length > maxFanout) {
+      // Partition incoming edges into chunks
+      const chunks: FlowEdge[][] = [];
+      for (let i = 0; i < incomingEdges.length; i += maxFanout) {
+        chunks.push(incomingEdges.slice(i, i + maxFanout));
+      }
+
+      const splitterIds: string[] = [];
+      chunks.forEach((chunk, idx) => {
+        const sid = `${hubId}__in_${idx}`;
+        splitterIds.push(sid);
+        nodeMap.set(sid, {
+          id: sid,
+          position: { x: -300 * (idx + 1), y: -200 },
+          data: {
+            label: `${hubId.slice(0, 6)}… in·${idx + 1}`,
+            isVirtual: true,
+            parentHubId: hubId,
+            hubSide: 'in',
+            isFirstIntent: hub.data.isFirstIntent,
+          },
+          type: 'splitter',
+        });
+
+        // Rewire chunk edges to target splitter instead of hub
+        for (const e of chunk) {
+          const idx2 = workEdges.findIndex((we) => we.id === e.id);
+          if (idx2 !== -1) workEdges[idx2] = { ...workEdges[idx2], target: sid };
+        }
+
+        // Add bridge edge: splitter → hub
+        workEdges.push({
+          id: `${sid}--bridge--${hubId}`,
+          source: sid,
+          target: hubId,
+          type: 'smoothstep',
+          animated: false,
+          isSplitterBridge: true,
+          style: { stroke: '#aaaaaa', strokeWidth: 1, strokeDasharray: '4 3', opacity: 0.5 },
+          label: '',
+        });
+      });
+
+      // Chain: splitter[0] → splitter[1] → … (informational, low-weight)
+      for (let i = 0; i < splitterIds.length - 1; i++) {
+        workEdges.push({
+          id: `${splitterIds[i]}--chain--${splitterIds[i + 1]}`,
+          source: splitterIds[i],
+          target: splitterIds[i + 1],
+          type: 'smoothstep',
+          animated: false,
+          isSplitterBridge: true,
+          style: { stroke: '#cccccc', strokeWidth: 1, strokeDasharray: '2 4', opacity: 0.3 },
+          label: '',
+        });
+      }
+    }
+
+    // ── outgoing splitters ──────────────────────────────────────────────────
+    const outgoingEdges = workEdges.filter((e) => e.source === hubId && !e.isSplitterBridge);
+    if (outgoingEdges.length > maxFanout) {
+      const chunks: FlowEdge[][] = [];
+      for (let i = 0; i < outgoingEdges.length; i += maxFanout) {
+        chunks.push(outgoingEdges.slice(i, i + maxFanout));
+      }
+
+      const splitterIds: string[] = [];
+      chunks.forEach((chunk, idx) => {
+        const sid = `${hubId}__out_${idx}`;
+        splitterIds.push(sid);
+        nodeMap.set(sid, {
+          id: sid,
+          position: { x: 300 * (idx + 1), y: 200 },
+          data: {
+            label: `${hubId.slice(0, 6)}… out·${idx + 1}`,
+            isVirtual: true,
+            parentHubId: hubId,
+            hubSide: 'out',
+            isFirstIntent: hub.data.isFirstIntent,
+          },
+          type: 'splitter',
+        });
+
+        // Rewire chunk edges to originate from splitter
+        for (const e of chunk) {
+          const idx2 = workEdges.findIndex((we) => we.id === e.id);
+          if (idx2 !== -1) workEdges[idx2] = { ...workEdges[idx2], source: sid };
+        }
+
+        // Add bridge edge: hub → splitter
+        workEdges.push({
+          id: `${hubId}--bridge--${sid}`,
+          source: hubId,
+          target: sid,
+          type: 'smoothstep',
+          animated: false,
+          isSplitterBridge: true,
+          style: { stroke: '#aaaaaa', strokeWidth: 1, strokeDasharray: '4 3', opacity: 0.5 },
+          label: '',
+        });
+      });
+
+      // Chain: splitter[0] → splitter[1] → …
+      for (let i = 0; i < splitterIds.length - 1; i++) {
+        workEdges.push({
+          id: `${splitterIds[i]}--chain--${splitterIds[i + 1]}`,
+          source: splitterIds[i],
+          target: splitterIds[i + 1],
+          type: 'smoothstep',
+          animated: false,
+          isSplitterBridge: true,
+          style: { stroke: '#cccccc', strokeWidth: 1, strokeDasharray: '2 4', opacity: 0.3 },
+          label: '',
+        });
+      }
+    }
+  }
+
+  return { nodes: [...nodeMap.values()], edges: workEdges };
 }
 
 // ─── Types matching the KB JSON shape ────────────────────────────────────────
@@ -243,12 +426,12 @@ for (const action of actions) {
         id: `${source}-${target}`,
         source,
         target,
-        type: 'straight',
+        type: 'smoothstep',
         animated: false,
         label: [...meta.labels].join(', '),
-        style: { stroke: strokeColor, strokeWidth: 2 }, // Apply React Flow styling
-        labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 }, // Optional: clean up label background
-        labelStyle: { fill: strokeColor, fontWeight: 700 } // Match text to line color
+        style: { stroke: strokeColor, strokeWidth: 2 },
+        labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 },
+        labelStyle: { fill: strokeColor, fontWeight: 700 }
       });
     }
   }
@@ -395,6 +578,7 @@ function pickFirstIntentId(sortedIntents: KBIntent[]): string | null {
 }
 
 // "[1]" < "[2]" < "noh" < "followUp" < "redirect"
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function compareEdgeLabel(a: string, b: string): number {
   const isDigitA = a.startsWith('[');
   const isDigitB = b.startsWith('[');
@@ -440,6 +624,7 @@ export function checkAllIntentsAdded(
 
 // ─── Layout: BFS depth from root intents, then column packing ────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function layoutActionGraph(
   nodes: FlowNode[],
   edges: FlowEdge[],

@@ -233,6 +233,84 @@ nothing on the main view.
 
 ---
 
+### 2026-06-03 · Layout optimization — ELK tuning, smoothstep edges, hub-splitting, splitter toggle
+**Status:** Added / Modified
+**Files:** `src/components/Canvas.tsx`, `src/components/parseKB.ts`, `src/App.tsx`, `src/App.css`
+**Why:** The default `layered` + `straight-edge` + no-split layout produced many long diagonal
+crossing edges, making the canvas hard to read, especially for high-fanout hub nodes
+(e.g. `Freeze account`, `Freeze card`) that fan out to 6+ targets simultaneously.
+**What:**
+
+#### 1. ELK layout option improvements (`Canvas.tsx` — `getLayoutedElements`)
+- `elk.spacing.nodeNode`: `100` → `60` (tighter horizontal packing, less wasted horizontal space).
+- `elk.layered.spacing.nodeNodeBetweenLayers`: `150` → `200` (more vertical breathing room between
+  layers, reduces edge overlap between adjacent rows).
+- `elk.edgeRouting`: `POLYLINE` → `ORTHOGONAL` (right-angle routing avoids diagonal edge tangles and
+  makes paths clearer on a grid-like layout).
+- Added `elk.layered.crossingMinimization.strategy: LAYER_SWEEP` and
+  `greedySwitch.type: TWO_SIDED` to enable aggressive crossing minimization across layers.
+- Added `elk.layered.compaction.postCompaction.strategy: EDGE_LENGTH` to compact whitespace after
+  initial placement.
+- Added `elk.separateConnectedComponents: false` so disconnected subgraphs stay in one layout pass.
+
+#### 2. Edge type: `straight` → `smoothstep` (`parseKB.ts`)
+- All action-based graph edges now use `type: 'smoothstep'` instead of `'straight'`. Smoothstep
+  edges route with rounded right-angle corners (matches the ORTHOGONAL ELK routing) and avoid
+  direct diagonal overlap when two edges share the same source or target.
+
+#### 3. Hub-splitting (`parseKB.ts` — new `splitHubNodes`)
+- New exported pure function `splitHubNodes(nodes, edges, options?)`.
+- **Trigger:** any node whose in-degree OR out-degree exceeds `threshold` (default **5**).
+- **Splitting:** incoming and outgoing edge groups are independently split into chains of
+  "splitter" virtual nodes, each holding at most `maxFanout` (default **3**) real edges.
+- Splitter nodes carry `data.isVirtual: true`, `data.parentHubId`, `data.hubSide: 'in' | 'out'`,
+  and `type: 'splitter'`. Their initial positions are staggered so ELK doesn't pile them at origin.
+- Bridge edges (splitter → hub, hub → splitter, and chain edges between siblings) carry
+  `isSplitterBridge: true` and a dashed gray style so they are visually distinct from real edges.
+- `FlowNode.data` interface extended with `isVirtual?`, `parentHubId?`, `hubSide?`.
+- `FlowEdge` interface extended with `isSplitterBridge?`.
+- `SplitHubOptions` interface exported for type-safe config.
+
+#### 4. Canvas splitter visuals + click-to-jump (`Canvas.tsx`)
+- New `splitterFocusHubId` state. When the user clicks a virtual splitter node,
+  `handleNodeClick` sets the focus to that node's `parentHubId`. Clicking the same hub again
+  (or the pane) clears the focus.
+- A new `useEffect` fires when `splitterFocusHubId` changes: it calls `fitBounds` on all
+  sibling splitters + the hub node, panning/zooming the viewport to show the full group
+  (400ms animation).
+- Node style map: new `isVirtual` branch renders splitter nodes with dashed gray border +
+  light gray background, italic small font. Focused splitters get cyan dashed border + teal
+  background and a glow shadow.
+- Edge style map: bridge edges get `opacity: 0.4` when no click selection is active, fully
+  transparent (0.1) when a click selection is active — so they never compete visually with
+  real method edges.
+- MiniMap: virtual nodes render as gray dots; focused-hub splitters render cyan.
+- `onNodeClick={handleNodeClick}` wired on `<ReactFlow>`. `handlePaneClick` also clears
+  `splitterFocusHubId`.
+- Added `getNodesBounds` import from `@xyflow/react` (needed for `fitBounds` calculation).
+
+#### 5. Splitter toggle in App.tsx + CSS
+- `App.tsx` state split into `rawNodes`/`rawEdges` (post-parse, pre-split) and `nodes`/`edges`
+  (rendered, post-split when toggle is on).
+- A `useEffect` re-derives `nodes`/`edges` from the raw graph whenever `splittersEnabled` or the
+  raw data changes. `checkAllIntentsAdded` runs on the pre-split graph.
+- Search filters `rawNodes` only (no virtual splitters appear in search results).
+- New "Hub Split: On/Off" toggle button in the top bar, shown only when a JSON is loaded.
+  Defaults to **On**. Clicking toggles `splittersEnabled`.
+- `App.css`: added `.splitter-toggle`, `.splitter-toggle.on` (green border/text, mint bg),
+  `.splitter-toggle.off` (gray), plus hover variants.
+
+**Notes / Mistakes:**
+- `compareEdgeLabel` and `layoutActionGraph` in `parseKB.ts` were previously unreferenced; added
+  `// eslint-disable-next-line @typescript-eslint/no-unused-vars` to keep the build warning-free
+  without removing the functions (they may be useful later).
+- `getNodesBounds` accepts `Node[]` not `FlowNode[]`; cast applied with `as Node[]`.
+- The ORTHOGONAL edge routing in ELK requires nodes to have defined sizes (already supplied as
+  `width: 250, height: 80`), so no additional changes were needed there.
+- Build verified clean (`Compiled successfully`) with no TS or ESLint errors.
+
+---
+
 ## To-Do
 
 ### 2026-06-02 · Re-add node-click highlight (immediate parent + all immediate children)

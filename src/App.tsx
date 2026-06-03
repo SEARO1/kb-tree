@@ -1,25 +1,44 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import JsonUploader from './components/JsonUploader';
 import Canvas from './components/Canvas';
-import { parseKBToGraph, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
+import { parseKBToGraph, splitHubNodes, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
 import './App.css';
 
 function App() {
+  // Raw parsed graph (pre-split) — source of truth for intent check + search
+  const [rawNodes, setRawNodes] = useState<FlowNode[]>([]);
+  const [rawEdges, setRawEdges] = useState<FlowEdge[]>([]);
+  // Rendered graph (post-split when toggle is on)
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
+
   const [showUploader, setShowUploader] = useState(false);
-  const [rawJson, setRawJson] = useState<any>(null);
   const [checkResult, setCheckResult] = useState<IntentCheckResult | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FlowNode[]>([]);
   const [currentResultIndex, setCurrentResultIndex] = useState(0);
 
+  // Splitter toggle — defaults to ON
+  const [splittersEnabled, setSplittersEnabled] = useState(true);
+
+  // Re-derive the rendered graph whenever raw data or toggle changes
+  useEffect(() => {
+    if (rawNodes.length === 0) return;
+    if (splittersEnabled) {
+      const { nodes: sn, edges: se } = splitHubNodes(rawNodes, rawEdges, { threshold: 5, maxFanout: 3 });
+      setNodes(sn);
+      setEdges(se);
+    } else {
+      setNodes(rawNodes);
+      setEdges(rawEdges);
+    }
+  }, [rawNodes, rawEdges, splittersEnabled]);
+
   const handleJsonLoaded = (data: any) => {
     try {
       const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data);
-      setNodes(newNodes);
-      setEdges(newEdges);
-      setRawJson(data);
+      setRawNodes(newNodes);
+      setRawEdges(newEdges);
       const result = checkAllIntentsAdded(data, newNodes);
       setCheckResult(result);
       setShowUploader(false);
@@ -38,7 +57,8 @@ function App() {
     }
 
     const query = searchQuery.toLowerCase();
-    const results = nodes.filter((node) => {
+    // Search only real intent nodes (not virtual splitters)
+    const results = rawNodes.filter((node) => {
       const label = node.data.label?.toLowerCase() || '';
       const id = node.id?.toLowerCase() || '';
       return id.includes(query) || label.includes(query);
@@ -46,7 +66,7 @@ function App() {
 
     setSearchResults(results);
     setCurrentResultIndex(0);
-  }, [searchQuery, nodes]);
+  }, [searchQuery, rawNodes]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -103,6 +123,16 @@ function App() {
           </div>
         )}
 
+        {rawNodes.length > 0 && (
+          <button
+            className={`splitter-toggle ${splittersEnabled ? 'on' : 'off'}`}
+            onClick={() => setSplittersEnabled((v) => !v)}
+            title="Split high-fanout hub nodes to reduce edge crossings"
+          >
+            Hub Split: {splittersEnabled ? 'On' : 'Off'}
+          </button>
+        )}
+
         <button
           className="upload-toggle"
           onClick={() => setShowUploader(!showUploader)}
@@ -142,7 +172,7 @@ function App() {
       </div>
 
       <div className="main-content">
-        {nodes.length > 0 ? (
+        {rawNodes.length > 0 ? (
           <div className="canvas-container">
             <Canvas
               initialNodes={nodes}

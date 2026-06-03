@@ -12,6 +12,7 @@ import {
   MiniMap,
   ReactFlowProvider,
   useReactFlow,
+  getNodesBounds,
 } from '@xyflow/react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import '@xyflow/react/dist/style.css';
@@ -35,10 +36,18 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
     layoutOptions: {
       'elk.algorithm': 'layered',
       'elk.direction': isHorizontal ? 'RIGHT' : 'DOWN',
-      'elk.spacing.nodeNode': '100',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '150',
-      'elk.edgeRouting': 'POLYLINE',
+      // Increased spacing to reduce visual clutter between nodes
+      'elk.spacing.nodeNode': '60',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '200',
+      // ORTHOGONAL routing avoids edge overlaps better than POLYLINE
+      'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      // Reduce crossings by allowing more aggressive node reordering
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.crossingMinimization.greedySwitch.type': 'TWO_SIDED',
+      // Compact layout horizontally and reduce unnecessary whitespace
+      'elk.layered.compaction.postCompaction.strategy': 'EDGE_LENGTH',
+      'elk.separateConnectedComponents': 'false',
     },
     children: nodes.map((n) => ({ ...n, width: 250, height: 80 })),
     edges: edges.map((e) => ({ ...e, id: e.id, sources: [e.source], targets: [e.target] })),
@@ -68,10 +77,14 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
 function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentResultIndex = 0 }: CanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { setCenter, getNode } = useReactFlow();
+  const { setCenter, getNode, fitBounds } = useReactFlow();
 
   // Click-to-highlight selection (edge only).
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+
+  // Splitter focus: when user clicks a virtual splitter node, pan/zoom to
+  // show all siblings of that hub.
+  const [splitterFocusHubId, setSplitterFocusHubId] = useState<string | null>(null);
 
   const currentSearchNode = searchResults[currentResultIndex];
 
@@ -99,6 +112,20 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
       }
     }
   }, [currentSearchNode, setCenter, getNode]);
+
+  // Pan/zoom to fit all splitter siblings when a splitter is clicked.
+  useEffect(() => {
+    if (!splitterFocusHubId) return;
+    const siblingNodes = nodes.filter(
+      (n) => (n.data as any)?.parentHubId === splitterFocusHubId || n.id === splitterFocusHubId,
+    );
+    if (siblingNodes.length === 0) return;
+    const bounds = getNodesBounds(siblingNodes as Node[]);
+    fitBounds(
+      { x: bounds.x - 60, y: bounds.y - 60, width: bounds.width + 120, height: bounds.height + 120 },
+      { duration: 400 },
+    );
+  }, [splitterFocusHubId, nodes, fitBounds]);
 
   const highlightedNodeIds = useMemo(() => {
     return new Set(searchResults.map(n => n.id));
@@ -138,6 +165,18 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
   const handlePaneClick = useCallback(() => {
     // Clicking on empty canvas clears the selection.
     setSelectedEdgeId(null);
+    setSplitterFocusHubId(null);
+  }, []);
+
+  // Node-click: when a virtual splitter is clicked, pan to show all its
+  // siblings. Clicking the same hub again clears the focus.
+  const handleNodeClick = useCallback((_evt: React.MouseEvent, node: Node) => {
+    const nodeData = node.data as FlowNode['data'];
+    if (nodeData?.isVirtual && nodeData?.parentHubId) {
+      setSplitterFocusHubId((prev) => (prev === nodeData.parentHubId ? null : nodeData.parentHubId!));
+    } else {
+      setSplitterFocusHubId(null);
+    }
   }, []);
 
   // Whether click-highlight is currently active.
@@ -159,9 +198,13 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
         nodes={nodes.map(node => {
+            const nodeData = node.data as FlowNode['data'];
             const isSearchHit = highlightedNodeIds.has(node.id);
             const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
             const isFirstIntent = node.id === firstIntentNodeId;
+            const isVirtual = nodeData?.isVirtual === true;
+            const parentHubId = nodeData?.parentHubId;
+            const isFocusedSplitter = splitterFocusHubId !== null && parentHubId === splitterFocusHubId;
             const baseStyle = (node.style ?? {}) as React.CSSProperties;
 
             if (isClickHighlighted) {
@@ -217,10 +260,44 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
               };
             }
 
+            if (isVirtual) {
+              // Splitter node — dashed border, light gray background.
+              // If it's part of the currently-focused hub, use a stronger cyan dashed border.
+              const splitterBorder = isFocusedSplitter
+                ? '2px dashed #06b6d4'
+                : '2px dashed #9ca3af';
+              const splitterShadow = isFocusedSplitter
+                ? '0 0 0 3px rgba(6, 182, 212, 0.2)'
+                : 'none';
+              return {
+                ...node,
+                style: {
+                  ...baseStyle,
+                  background: isFocusedSplitter ? '#e0f7fa' : '#f3f4f6',
+                  border: splitterBorder,
+                  borderRadius: '4px',
+                  boxShadow: splitterShadow,
+                  opacity: 0.85,
+                  fontStyle: 'italic',
+                  fontSize: '11px',
+                  zIndex: isFocusedSplitter ? 10 : 1,
+                },
+              };
+            }
+
             return node;
           })}
         edges={edges.map(edge => {
-            if (!clickActive) return edge;
+            const isBridge = (edge.data as any)?.isSplitterBridge || (edge as any).isSplitterBridge;
+
+            if (!clickActive) {
+              // When no click selection: dim bridge edges slightly so real edges stand out
+              if (isBridge) {
+                const baseStyle = (edge.style ?? {}) as React.CSSProperties;
+                return { ...edge, style: { ...baseStyle, opacity: 0.4 } } as Edge;
+              }
+              return edge;
+            }
 
             const isClickHighlighted = clickHighlightedEdgeIds!.has(edge.id);
             const baseStyle = (edge.style ?? {}) as React.CSSProperties;
@@ -246,6 +323,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={handleEdgeClick}
+        onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}
         fitView
         fitViewOptions={{ padding: 0.2 }}
@@ -261,6 +339,10 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
             if (node.id === firstIntentNodeId) return '#f59e0b';
             if (node.id === currentSearchNode?.id) return '#eab308';
             if (clickActive && clickHighlightedNodeIds!.has(node.id)) return '#06b6d4';
+            const nd = node.data as FlowNode['data'];
+            if (nd?.isVirtual) {
+              return nd?.parentHubId === splitterFocusHubId ? '#06b6d4' : '#9ca3af';
+            }
             switch (node.type) {
               case 'input': return '#61dafb';
               case 'output': return '#ff6b6b';
