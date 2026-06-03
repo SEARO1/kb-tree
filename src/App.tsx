@@ -1,25 +1,36 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback } from 'react';
 import JsonUploader from './components/JsonUploader';
 import Canvas from './components/Canvas';
-import { parseKBToGraph, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
+import {
+  parseKBToGraph,
+  checkAllIntentsAdded,
+  IntentCheckResult,
+  FlowNode,
+  FlowEdge,
+  GraphMetadata,
+} from './components/parseKB';
 import './App.css';
+
+type GraphViewMode = 'simplified' | 'detailed';
 
 function App() {
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
   const [showUploader, setShowUploader] = useState(false);
-  const [rawJson, setRawJson] = useState<any>(null);
   const [checkResult, setCheckResult] = useState<IntentCheckResult | null>(null);
+  const [metadata, setMetadata] = useState<GraphMetadata | null>(null);
+  const [viewMode, setViewMode] = useState<GraphViewMode>('simplified');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FlowNode[]>([]);
   const [currentResultIndex, setCurrentResultIndex] = useState(0);
 
   const handleJsonLoaded = (data: any) => {
     try {
-      const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data);
+      const { nodes: newNodes, edges: newEdges, metadata: newMetadata } = parseKBToGraph(data);
       setNodes(newNodes);
       setEdges(newEdges);
-      setRawJson(data);
+      setMetadata(newMetadata);
+      setViewMode('simplified');
       const result = checkAllIntentsAdded(data, newNodes);
       setCheckResult(result);
       setShowUploader(false);
@@ -117,6 +128,21 @@ function App() {
         )}
 
         <div className="search-container">
+          <div className="view-mode-toggle" role="group" aria-label="Graph detail mode">
+            <button
+              className={`view-mode-btn ${viewMode === 'simplified' ? 'active' : ''}`}
+              onClick={() => setViewMode('simplified')}
+            >
+              Simplified (clusters)
+            </button>
+            <button
+              className={`view-mode-btn ${viewMode === 'detailed' ? 'active' : ''}`}
+              onClick={() => setViewMode('detailed')}
+            >
+              Detailed
+            </button>
+          </div>
+
           <input
             type="text"
             className="search-input"
@@ -147,6 +173,8 @@ function App() {
             <Canvas
               initialNodes={nodes}
               initialEdges={edges}
+              metadata={metadata ?? undefined}
+              viewMode={viewMode}
               searchResults={searchResults}
               currentResultIndex={currentResultIndex}
             />

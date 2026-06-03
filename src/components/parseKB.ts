@@ -9,6 +9,12 @@ export interface FlowNode {
     isFirstIntent?: boolean;
     splitRole?: 'in' | 'out';
     splitPairId?: string;
+    baseIntentId?: string;
+    sccId?: string;
+    sccSize?: number;
+    isCyclicScc?: boolean;
+    isCluster?: boolean;
+    memberCount?: number;
   };
   type?: string;
 }
@@ -23,6 +29,40 @@ export interface FlowEdge {
   style?: any;         // Add this line to allow custom line colors
   labelBgStyle?: any;  // Add this line to allow label background styling
   labelStyle?: any;    // Add this line to allow label text styling
+  data?: {
+    edgeClass?: 'intra-scc' | 'inter-scc' | 'cluster';
+    methods?: string[];
+    sourceSccId?: string;
+    targetSccId?: string;
+    isBackEdge?: boolean;
+  };
+  className?: string;
+}
+
+export interface SCCComponent {
+  id: string;
+  members: string[];
+  isCyclic: boolean;
+}
+
+export interface CondensedEdge {
+  id: string;
+  sourceSccId: string;
+  targetSccId: string;
+  transitionCount: number;
+}
+
+export interface GraphMetadata {
+  intentToSccId: Record<string, string>;
+  nodeToSccId: Record<string, string>;
+  sccs: SCCComponent[];
+  condensedEdges: CondensedEdge[];
+}
+
+export interface ParseKBResult {
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  metadata: GraphMetadata;
 }
 
 // ─── Types matching the KB JSON shape ────────────────────────────────────────
@@ -86,7 +126,7 @@ const V_GAP       = 100;
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 
-export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEdge[] } {
+export function parseKBToGraph(rawJson: any): ParseKBResult {
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
   const kb = rawJson as KBJson;
@@ -96,13 +136,13 @@ export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEd
   const hasActions = kb.actions && Array.isArray(kb.actions) && kb.actions.length > 0;
 
   if (hasIntents && hasActions) {
-    parseKBFormatActions(kb, nodes, edges);
-    return { nodes, edges };
+    const metadata = parseKBFormatActions(kb, nodes, edges);
+    return { nodes, edges, metadata };
   }
 
   if (hasIntents) {
     parseKBFormat(kb, nodes, edges);
-    return { nodes, edges };
+    return { nodes, edges, metadata: buildBasicMetadata(nodes, edges) };
   }
 
   // ── Fallback: generic nested tree (legacy behaviour) ─────────────────────
@@ -131,7 +171,7 @@ export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEd
     }
   }
   traverse(rawJson, 0, null);
-  return { nodes, edges };
+  return { nodes, edges, metadata: buildBasicMetadata(nodes, edges) };
 }
 
 // ─── Action-based graph parser ───────────────────────────────────────────────
@@ -148,7 +188,7 @@ export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEd
 //   4. Each (source → target) becomes a labelled edge in the graph
 //   5. Intents are sorted by sortOrder / intentId before rendering
 
-function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]): void {
+function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]): GraphMetadata {
   const intents: KBIntent[] = [...(kb.intents ?? [])].sort(compareIntent);
   const actions: KBAction[] = [...(kb.actions ?? [])].sort(compareAction);
 
@@ -174,7 +214,6 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
 
     for (const redirect of redirects) {
       if (!redirect.targetId) continue;
-      if (redirect.targetId === sourceIntentId) continue;
       if (!intentMap.has(redirect.targetId)) continue;
 
       let outgoing = adjacency.get(sourceIntentId);
@@ -205,6 +244,11 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   }
 
   const sortedUsedIntents = intents.filter(i => usedIntentIds.has(i.intentId));
+  const intentIdsForScc = sortedUsedIntents.map((intent) => intent.intentId);
+
+  const sccResult = computeSCCs(adjacency, intentIdsForScc);
+  const condensedEdges = buildCondensedDag(sccResult.intentToSccId, adjacency);
+  const sccMap = new Map(sccResult.components.map((component) => [component.id, component]));
 
   // Identify the "first intent" — the entry-point of the flow.
   // Heuristic: the root intent (parentId === 'ROOT' / null) with the
@@ -240,6 +284,8 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     const arrow = isFirst ? '▶ ' : '';
 
     if (!isSplit) {
+      const sccId = sccResult.intentToSccId[intent.intentId] ?? intent.intentId;
+      const scc = sccMap.get(sccId);
       nodes.push({
         id: intent.intentId,
         position: { x: 0, y: 0 },
@@ -247,11 +293,18 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
           label: `${arrow}${intent.intentId}\n${intent.intentName}`,
           rawData: intent,
           isFirstIntent: isFirst,
+          baseIntentId: intent.intentId,
+          sccId,
+          sccSize: scc?.members.length ?? 1,
+          isCyclicScc: scc?.isCyclic ?? false,
         },
         type: 'default',
       });
       continue;
     }
+
+    const sccId = sccResult.intentToSccId[intent.intentId] ?? intent.intentId;
+    const scc = sccMap.get(sccId);
 
     nodes.push({
       id: getSplitNodeId(intent.intentId, 'in'),
@@ -262,6 +315,10 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
         isFirstIntent: isFirst,
         splitRole: 'in',
         splitPairId: intent.intentId,
+        baseIntentId: intent.intentId,
+        sccId,
+        sccSize: scc?.members.length ?? 1,
+        isCyclicScc: scc?.isCyclic ?? false,
       },
       type: 'default',
     });
@@ -274,6 +331,10 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
         rawData: intent,
         splitRole: 'out',
         splitPairId: intent.intentId,
+        baseIntentId: intent.intentId,
+        sccId,
+        sccSize: scc?.members.length ?? 1,
+        isCyclicScc: scc?.isCyclic ?? false,
       },
       type: 'default',
     });
@@ -302,6 +363,14 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
 
       const sourceId = splitIntentIds.has(source) ? getSplitNodeId(source, 'out') : source;
       const targetId = splitIntentIds.has(target) ? getSplitNodeId(target, 'in') : target;
+      const sourceSccId = sccResult.intentToSccId[source] ?? source;
+      const targetSccId = sccResult.intentToSccId[target] ?? target;
+      const edgeClass = sourceSccId === targetSccId ? 'intra-scc' : 'inter-scc';
+
+      const edgeStyle =
+        edgeClass === 'intra-scc'
+          ? { stroke: strokeColor, strokeWidth: 1.5, strokeDasharray: '5 3', opacity: 0.55 }
+          : { stroke: strokeColor, strokeWidth: 2 };
 
       edges.push({
         id: `${sourceId}-${targetId}`,
@@ -310,9 +379,16 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
         type: 'straight',
         animated: false,
         label: [...meta.labels].join(', '),
-        style: { stroke: strokeColor, strokeWidth: 2 }, // Apply React Flow styling
+        style: edgeStyle,
         labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 }, // Optional: clean up label background
-        labelStyle: { fill: strokeColor, fontWeight: 700 } // Match text to line color
+        labelStyle: { fill: strokeColor, fontWeight: 700 }, // Match text to line color
+        className: edgeClass,
+        data: {
+          edgeClass,
+          methods: [...meta.methods].sort(),
+          sourceSccId,
+          targetSccId,
+        },
       });
     }
   }
@@ -327,8 +403,179 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
       type: 'straight',
       animated: false,
       style: { stroke: '#9ca3af', strokeWidth: 1, strokeDasharray: '4 4' },
+      className: 'intra-scc',
+      data: {
+        edgeClass: 'intra-scc',
+        methods: ['splitLink'],
+        sourceSccId: sccResult.intentToSccId[intentId] ?? intentId,
+        targetSccId: sccResult.intentToSccId[intentId] ?? intentId,
+      },
     });
   }
+
+  const nodeToSccId: Record<string, string> = {};
+  for (const node of nodes) {
+    const baseIntentId = node.data.baseIntentId ?? node.id;
+    const sccId = sccResult.intentToSccId[baseIntentId] ?? baseIntentId;
+    nodeToSccId[node.id] = sccId;
+  }
+
+  return {
+    intentToSccId: sccResult.intentToSccId,
+    nodeToSccId,
+    sccs: sccResult.components,
+    condensedEdges,
+  };
+}
+
+function buildBasicMetadata(nodes: FlowNode[], edges: FlowEdge[]): GraphMetadata {
+  const intentToSccId: Record<string, string> = {};
+  const nodeToSccId: Record<string, string> = {};
+  const sccs: SCCComponent[] = [];
+
+  for (const node of nodes) {
+    const baseIntentId = node.data.baseIntentId ?? node.data.splitPairId ?? node.id;
+    intentToSccId[baseIntentId] = baseIntentId;
+    nodeToSccId[node.id] = baseIntentId;
+  }
+
+  for (const intentId of Object.keys(intentToSccId)) {
+    sccs.push({ id: intentId, members: [intentId], isCyclic: false });
+  }
+
+  const condensedMap = new Map<string, CondensedEdge>();
+  for (const edge of edges) {
+    const sourceSccId = nodeToSccId[edge.source] ?? edge.source;
+    const targetSccId = nodeToSccId[edge.target] ?? edge.target;
+    if (sourceSccId === targetSccId) continue;
+    const id = `${sourceSccId}->${targetSccId}`;
+    const existing = condensedMap.get(id);
+    if (existing) {
+      existing.transitionCount += 1;
+    } else {
+      condensedMap.set(id, {
+        id,
+        sourceSccId,
+        targetSccId,
+        transitionCount: 1,
+      });
+    }
+  }
+
+  return {
+    intentToSccId,
+    nodeToSccId,
+    sccs,
+    condensedEdges: [...condensedMap.values()],
+  };
+}
+
+function computeSCCs(
+  adjacency: Map<string, Map<string, { labels: Set<string>; methods: Set<string>; order: number }>>,
+  allIntentIds: string[],
+): {
+  components: SCCComponent[];
+  intentToSccId: Record<string, string>;
+} {
+  const ids = new Set<string>(allIntentIds);
+  for (const [source, targets] of adjacency) {
+    ids.add(source);
+    for (const target of targets.keys()) ids.add(target);
+  }
+
+  const indexMap = new Map<string, number>();
+  const lowLink = new Map<string, number>();
+  const stack: string[] = [];
+  const inStack = new Set<string>();
+  let index = 0;
+
+  const components: SCCComponent[] = [];
+
+  const strongConnect = (nodeId: string) => {
+    indexMap.set(nodeId, index);
+    lowLink.set(nodeId, index);
+    index += 1;
+
+    stack.push(nodeId);
+    inStack.add(nodeId);
+
+    const outgoing = adjacency.get(nodeId);
+    if (outgoing) {
+      for (const targetId of outgoing.keys()) {
+        if (!indexMap.has(targetId)) {
+          strongConnect(targetId);
+          const low = Math.min(lowLink.get(nodeId)!, lowLink.get(targetId)!);
+          lowLink.set(nodeId, low);
+        } else if (inStack.has(targetId)) {
+          const low = Math.min(lowLink.get(nodeId)!, indexMap.get(targetId)!);
+          lowLink.set(nodeId, low);
+        }
+      }
+    }
+
+    if (lowLink.get(nodeId) === indexMap.get(nodeId)) {
+      const members: string[] = [];
+      let current = '';
+      do {
+        current = stack.pop()!;
+        inStack.delete(current);
+        members.push(current);
+      } while (current !== nodeId);
+
+      members.sort(compareIntentId);
+      const hasSelfLoop = adjacency.get(nodeId)?.has(nodeId) ?? false;
+      const isCyclic = members.length > 1 || hasSelfLoop;
+      const componentId = `scc-${components.length}`;
+      components.push({
+        id: componentId,
+        members,
+        isCyclic,
+      });
+    }
+  };
+
+  const sortedIds = [...ids].sort(compareIntentId);
+  for (const id of sortedIds) {
+    if (!indexMap.has(id)) strongConnect(id);
+  }
+
+  const intentToSccId: Record<string, string> = {};
+  for (const component of components) {
+    for (const member of component.members) {
+      intentToSccId[member] = component.id;
+    }
+  }
+
+  components.sort((a, b) => compareIntentId(a.members[0], b.members[0]));
+
+  return { components, intentToSccId };
+}
+
+function buildCondensedDag(
+  intentToSccId: Record<string, string>,
+  adjacency: Map<string, Map<string, { labels: Set<string>; methods: Set<string>; order: number }>>,
+): CondensedEdge[] {
+  const condensedMap = new Map<string, CondensedEdge>();
+  for (const [sourceIntent, targets] of adjacency) {
+    const sourceSccId = intentToSccId[sourceIntent] ?? sourceIntent;
+    for (const targetIntent of targets.keys()) {
+      const targetSccId = intentToSccId[targetIntent] ?? targetIntent;
+      if (sourceSccId === targetSccId) continue;
+      const id = `${sourceSccId}->${targetSccId}`;
+      const existing = condensedMap.get(id);
+      if (existing) {
+        existing.transitionCount += 1;
+      } else {
+        condensedMap.set(id, {
+          id,
+          sourceSccId,
+          targetSccId,
+          transitionCount: 1,
+        });
+      }
+    }
+  }
+  return [...condensedMap.values()].sort((a, b) => compareIntentId(a.id, b.id));
 }
 
 function normalizePayload(payload: KBAction['payload']): KBActionPayload | null {

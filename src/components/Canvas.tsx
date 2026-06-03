@@ -16,16 +16,25 @@ import {
 import ELK from 'elkjs/lib/elk.bundled.js';
 import '@xyflow/react/dist/style.css';
 
-import { FlowNode, FlowEdge } from './parseKB';
+import { FlowNode, FlowEdge, GraphMetadata } from './parseKB';
+
+type GraphViewMode = 'simplified' | 'detailed';
 
 interface CanvasProps {
   initialNodes: FlowNode[];
   initialEdges: FlowEdge[];
+  metadata?: GraphMetadata;
+  viewMode?: GraphViewMode;
   searchResults?: FlowNode[];
   currentResultIndex?: number;
 }
 
 const elk = new ELK();
+
+const NODE_WIDTH = 250;
+const NODE_HEIGHT = 80;
+const CLUSTER_WIDTH = 320;
+const CLUSTER_HEIGHT = 110;
 
 const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = 'TB') => {
   const isHorizontal = dir === 'LR';
@@ -40,7 +49,12 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
       'elk.edgeRouting': 'POLYLINE',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
     },
-    children: nodes.map((n) => ({ ...n, width: 250, height: 80 })),
+    children: nodes.map((n) => {
+      const style = (n as any).style ?? {};
+      const width = Number((n as any).width ?? style.width ?? NODE_WIDTH) || NODE_WIDTH;
+      const height = Number((n as any).height ?? style.height ?? NODE_HEIGHT) || NODE_HEIGHT;
+      return { ...n, width, height };
+    }),
     edges: edges.map((e) => ({ ...e, id: e.id, sources: [e.source], targets: [e.target] })),
   };
 
@@ -60,69 +74,390 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
 
     return { nodes: layoutedNodes, edges };
   } catch (error) {
-    console.error("ELK Layout Error:", error);
+    console.error('ELK Layout Error:', error);
     return { nodes, edges };
   }
 };
 
-function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentResultIndex = 0 }: CanvasProps) {
+function buildSimplifiedGraph(
+  initialNodes: FlowNode[],
+  initialEdges: FlowEdge[],
+  metadata: GraphMetadata,
+  expandedSccIds: Set<string>,
+): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  const sccMap = new Map(metadata.sccs.map((scc) => [scc.id, scc]));
+
+  const nodesByScc = new Map<string, FlowNode[]>();
+  for (const node of initialNodes) {
+    const sccId = metadata.nodeToSccId[node.id] ?? node.data.sccId;
+    if (!sccId) continue;
+    const existing = nodesByScc.get(sccId) ?? [];
+    existing.push(node);
+    nodesByScc.set(sccId, existing);
+  }
+
+  const displayedNodes: FlowNode[] = [];
+  const nodeIdMap = new Map<string, string>();
+
+  for (const scc of metadata.sccs) {
+    const members = nodesByScc.get(scc.id) ?? [];
+    if (members.length === 0) continue;
+
+    const anchor = { x: 0, y: 0 };
+    const anchorCenterX = anchor.x + NODE_WIDTH / 2;
+    const anchorCenterY = anchor.y + NODE_HEIGHT / 2;
+
+    const isCollapsed = scc.isCyclic && !expandedSccIds.has(scc.id);
+    if (isCollapsed) {
+      const clusterNodeId = `scc:${scc.id}`;
+      displayedNodes.push({
+        id: clusterNodeId,
+        position: {
+          x: anchorCenterX - CLUSTER_WIDTH / 2,
+          y: anchorCenterY - CLUSTER_HEIGHT / 2,
+        },
+        data: {
+          label: `Cycle Cluster\n${scc.members.length} intents`,
+          isCluster: true,
+          sccId: scc.id,
+          isCyclicScc: true,
+          memberCount: scc.members.length,
+        },
+        type: 'default',
+        style: {
+          width: CLUSTER_WIDTH,
+          height: CLUSTER_HEIGHT,
+        } as any,
+      });
+
+      for (const member of members) {
+        nodeIdMap.set(member.id, clusterNodeId);
+      }
+      continue;
+    }
+
+    if (members.length === 1) {
+      const member = members[0];
+      displayedNodes.push({
+        ...member,
+        position: { x: anchor.x, y: anchor.y },
+      });
+      nodeIdMap.set(member.id, member.id);
+      continue;
+    }
+
+    const isCyclic = sccMap.get(scc.id)?.isCyclic ?? false;
+    if (isCyclic) {
+      const radius = Math.max(110, members.length * 18);
+      members.forEach((member, index) => {
+        const theta = (2 * Math.PI * index) / members.length;
+        const x = anchorCenterX + Math.cos(theta) * radius - NODE_WIDTH / 2;
+        const y = anchorCenterY + Math.sin(theta) * (radius * 0.7) - NODE_HEIGHT / 2;
+        displayedNodes.push({
+          ...member,
+          position: { x, y },
+        });
+        nodeIdMap.set(member.id, member.id);
+      });
+      continue;
+    }
+
+    // Non-cyclic SCCs with multiple nodes (typically split in/out nodes)
+    members.forEach((member, index) => {
+      const x = anchor.x;
+      const y = anchor.y + index * (NODE_HEIGHT + 26);
+      displayedNodes.push({
+        ...member,
+        position: { x, y },
+      });
+      nodeIdMap.set(member.id, member.id);
+    });
+  }
+
+  const visibleNodeIds = new Set(displayedNodes.map((node) => node.id));
+
+  type EdgeAgg = {
+    id: string;
+    source: string;
+    target: string;
+    labels: Set<string>;
+    methods: Set<string>;
+    count: number;
+    sourceSccId?: string;
+    targetSccId?: string;
+    edgeClass: 'intra-scc' | 'inter-scc' | 'cluster';
+  };
+
+  const clusteredEdgeMap = new Map<string, EdgeAgg>();
+  const displayedEdges: FlowEdge[] = [];
+
+  for (const edge of initialEdges) {
+    const sourceMapped = nodeIdMap.get(edge.source) ?? edge.source;
+    const targetMapped = nodeIdMap.get(edge.target) ?? edge.target;
+
+    if (!visibleNodeIds.has(sourceMapped) || !visibleNodeIds.has(targetMapped)) continue;
+
+    if (sourceMapped === targetMapped && sourceMapped.startsWith('scc:')) {
+      continue;
+    }
+
+    const hasClusterEndpoint = sourceMapped.startsWith('scc:') || targetMapped.startsWith('scc:');
+    if (!hasClusterEndpoint) {
+      displayedEdges.push({
+        ...edge,
+        id: `${edge.id}__${sourceMapped}__${targetMapped}`,
+        source: sourceMapped,
+        target: targetMapped,
+      });
+      continue;
+    }
+
+    const sourceSccId = metadata.nodeToSccId[edge.source] ?? edge.data?.sourceSccId;
+    const targetSccId = metadata.nodeToSccId[edge.target] ?? edge.data?.targetSccId;
+    const edgeClass = sourceSccId && targetSccId && sourceSccId === targetSccId ? 'intra-scc' : 'cluster';
+    const key = `${sourceMapped}->${targetMapped}|${edgeClass}`;
+
+    let agg = clusteredEdgeMap.get(key);
+    if (!agg) {
+      agg = {
+        id: `agg:${key}`,
+        source: sourceMapped,
+        target: targetMapped,
+        labels: new Set(),
+        methods: new Set(),
+        count: 0,
+        sourceSccId,
+        targetSccId,
+        edgeClass,
+      };
+      clusteredEdgeMap.set(key, agg);
+    }
+
+    if (edge.label) agg.labels.add(edge.label);
+    for (const method of edge.data?.methods ?? []) {
+      agg.methods.add(method);
+    }
+    agg.count += 1;
+  }
+
+  for (const agg of clusteredEdgeMap.values()) {
+    const labels = [...agg.labels];
+    displayedEdges.push({
+      id: agg.id,
+      source: agg.source,
+      target: agg.target,
+      type: 'straight',
+      animated: false,
+      label: labels.length > 0 ? `${Math.min(labels.length, 3)} labels · ${agg.count} links` : `${agg.count} links`,
+      style: {
+        stroke: '#64748b',
+        strokeWidth: 2,
+        opacity: 0.8,
+        strokeDasharray: '6 4',
+      },
+      labelBgStyle: { fill: '#ffffff', fillOpacity: 0.85 },
+      labelStyle: { fill: '#334155', fontWeight: 700 },
+      className: agg.edgeClass,
+      data: {
+        edgeClass: agg.edgeClass,
+        methods: [...agg.methods],
+        sourceSccId: agg.sourceSccId,
+        targetSccId: agg.targetSccId,
+      },
+    });
+  }
+
+  return { nodes: displayedNodes, edges: displayedEdges };
+}
+
+async function getClusterLayoutedElements(
+  initialNodes: FlowNode[],
+  initialEdges: FlowEdge[],
+  metadata: GraphMetadata,
+  expandedSccIds: Set<string>,
+): Promise<{ nodes: FlowNode[]; edges: FlowEdge[] }> {
+  const anchorNodes: FlowNode[] = metadata.sccs.map((scc) => {
+    const isCollapsed = scc.isCyclic && !expandedSccIds.has(scc.id);
+    const width = isCollapsed ? CLUSTER_WIDTH : NODE_WIDTH;
+    const height = isCollapsed ? CLUSTER_HEIGHT : NODE_HEIGHT;
+    return {
+      id: `anchor:${scc.id}`,
+      position: { x: 0, y: 0 },
+      data: { label: scc.id },
+      style: { width, height } as any,
+    };
+  });
+
+  const anchorEdges: FlowEdge[] = metadata.condensedEdges.map((edge) => ({
+    id: `anchor-edge:${edge.id}`,
+    source: `anchor:${edge.sourceSccId}`,
+    target: `anchor:${edge.targetSccId}`,
+    type: 'straight',
+  }));
+
+  const { nodes: layoutedAnchors } = await getLayoutedElements(anchorNodes, anchorEdges, 'TB');
+  const anchorPositionByScc = new Map<string, { x: number; y: number }>();
+  for (const anchor of layoutedAnchors) {
+    anchorPositionByScc.set(anchor.id.replace('anchor:', ''), anchor.position);
+  }
+
+  const stagedNodes = initialNodes.map((node) => ({
+    ...node,
+    position: node.position,
+  }));
+
+  const metadataWithAnchors: GraphMetadata = {
+    ...metadata,
+    sccs: metadata.sccs,
+  };
+
+  const base = buildSimplifiedGraph(stagedNodes, initialEdges, metadataWithAnchors, expandedSccIds);
+
+  const nodesById = new Map(base.nodes.map((node) => [node.id, node]));
+
+  for (const scc of metadata.sccs) {
+    const anchorPos = anchorPositionByScc.get(scc.id);
+    if (!anchorPos) continue;
+
+    const clusterNode = nodesById.get(`scc:${scc.id}`);
+    if (clusterNode) {
+      clusterNode.position = {
+        x: anchorPos.x + NODE_WIDTH / 2 - CLUSTER_WIDTH / 2,
+        y: anchorPos.y + NODE_HEIGHT / 2 - CLUSTER_HEIGHT / 2,
+      };
+      continue;
+    }
+
+    const sccNodeIds = base.nodes
+      .filter((node) => {
+        const nodeSccId = metadata.nodeToSccId[node.id] ?? node.data?.sccId;
+        return nodeSccId === scc.id;
+      })
+      .map((node) => node.id);
+
+    if (sccNodeIds.length === 0) continue;
+
+    if (sccNodeIds.length === 1) {
+      const node = nodesById.get(sccNodeIds[0]);
+      if (!node) continue;
+      node.position = { x: anchorPos.x, y: anchorPos.y };
+      continue;
+    }
+
+    const centerX = anchorPos.x + NODE_WIDTH / 2;
+    const centerY = anchorPos.y + NODE_HEIGHT / 2;
+    const radius = Math.max(110, sccNodeIds.length * 18);
+
+    sccNodeIds.forEach((nodeId, index) => {
+      const node = nodesById.get(nodeId);
+      if (!node) return;
+
+      if (!scc.isCyclic) {
+        node.position = {
+          x: anchorPos.x,
+          y: anchorPos.y + index * (NODE_HEIGHT + 26),
+        };
+        return;
+      }
+
+      const theta = (2 * Math.PI * index) / sccNodeIds.length;
+      node.position = {
+        x: centerX + Math.cos(theta) * radius - NODE_WIDTH / 2,
+        y: centerY + Math.sin(theta) * (radius * 0.7) - NODE_HEIGHT / 2,
+      };
+    });
+  }
+
+  return base;
+}
+
+function CanvasInner({
+  initialNodes,
+  initialEdges,
+  metadata,
+  viewMode = 'simplified',
+  searchResults = [],
+  currentResultIndex = 0,
+}: CanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { setCenter, getNode } = useReactFlow();
 
-  // Click-to-highlight selection (edge only).
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [expandedSccIds, setExpandedSccIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setExpandedSccIds(new Set());
+    setSelectedEdgeId(null);
+  }, [initialNodes, initialEdges, viewMode]);
+
+  const resolveVisibleNodeId = useCallback(
+    (nodeId: string): string => {
+      if (viewMode !== 'simplified' || !metadata) return nodeId;
+
+      const sccId = metadata.nodeToSccId[nodeId] ?? initialNodes.find((node) => node.id === nodeId)?.data?.sccId;
+      if (!sccId) return nodeId;
+      const scc = metadata.sccs.find((item) => item.id === sccId);
+      if (!scc?.isCyclic || expandedSccIds.has(sccId)) return nodeId;
+      return `scc:${sccId}`;
+    },
+    [viewMode, metadata, initialNodes, expandedSccIds],
+  );
 
   const currentSearchNode = searchResults[currentResultIndex];
 
   useEffect(() => {
     const applyLayout = async () => {
-      const { nodes: layoutedNodes, edges: layoutedEdges } = await getLayoutedElements(
-        initialNodes,
-        initialEdges,
-        'TB'
-      );
+      if (viewMode === 'simplified' && metadata) {
+        const { nodes: layoutedNodes, edges: layoutedEdges } = await getClusterLayoutedElements(
+          initialNodes,
+          initialEdges,
+          metadata,
+          expandedSccIds,
+        );
+        setNodes(layoutedNodes as Node[]);
+        setEdges(layoutedEdges as Edge[]);
+        return;
+      }
 
+      const { nodes: layoutedNodes, edges: layoutedEdges } = await getLayoutedElements(initialNodes, initialEdges, 'TB');
       setNodes(layoutedNodes as Node[]);
       setEdges(layoutedEdges as Edge[]);
     };
 
     applyLayout();
-  }, [initialNodes, initialEdges, setNodes, setEdges]);
+  }, [initialNodes, initialEdges, metadata, viewMode, expandedSccIds, setNodes, setEdges]);
 
-  // Center on the current search result node
   useEffect(() => {
-    if (currentSearchNode) {
-      const node = getNode(currentSearchNode.id);
-      if (node) {
-        setCenter(node.position.x + 125, node.position.y + 40, { duration: 500, zoom: 1.5 });
-      }
-    }
-  }, [currentSearchNode, setCenter, getNode]);
+    if (!currentSearchNode) return;
+    const visibleNodeId = resolveVisibleNodeId(currentSearchNode.id);
+    const node = getNode(visibleNodeId);
+    if (!node) return;
+    setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + NODE_HEIGHT / 2, {
+      duration: 500,
+      zoom: 1.45,
+    });
+  }, [currentSearchNode, resolveVisibleNodeId, setCenter, getNode]);
 
   const highlightedNodeIds = useMemo(() => {
-    return new Set(searchResults.map(n => n.id));
-  }, [searchResults]);
+    return new Set(searchResults.map((node) => resolveVisibleNodeId(node.id)));
+  }, [searchResults, resolveVisibleNodeId]);
 
-  // The "first intent" (entry point of the flow) — the node that gets
-  // the ▶ arrow marker. Used to apply the entry-point visual style and
-  // to color it distinctly in the MiniMap.
   const firstIntentNodeId = useMemo(() => {
-    return initialNodes.find(n => n.data?.isFirstIntent)?.id ?? null;
-  }, [initialNodes]);
+    const firstRawNode = initialNodes.find((node) => node.data?.isFirstIntent);
+    if (!firstRawNode) return null;
+    return resolveVisibleNodeId(firstRawNode.id);
+  }, [initialNodes, resolveVisibleNodeId]);
 
-  // Compute the highlighted-node set for the current click selection
-  // (edge-only: just the two endpoints of the selected edge).
   const clickHighlightedNodeIds = useMemo(() => {
     if (selectedEdgeId) {
-      const edge = edges.find((e) => e.id === selectedEdgeId);
+      const edge = edges.find((item) => item.id === selectedEdgeId);
       if (edge) return new Set([edge.source, edge.target]);
       return new Set<string>();
     }
-    return null; // null = no click selection active
+    return null;
   }, [selectedEdgeId, edges]);
 
-  // Edges to keep visible/emphasized: the single selected edge.
   const clickHighlightedEdgeIds = useMemo(() => {
     if (selectedEdgeId) {
       return new Set([selectedEdgeId]);
@@ -130,35 +465,42 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     return null;
   }, [selectedEdgeId]);
 
-  // Toggle helper — clicking the same edge twice clears the selection.
   const handleEdgeClick = useCallback((_evt: React.MouseEvent, edge: Edge) => {
     setSelectedEdgeId((prev) => (prev === edge.id ? null : edge.id));
   }, []);
 
   const handlePaneClick = useCallback(() => {
-    // Clicking on empty canvas clears the selection.
     setSelectedEdgeId(null);
   }, []);
 
   const handleNodeClick = useCallback(
     (_evt: React.MouseEvent, node: Node) => {
       const data = node.data as FlowNode['data'] | undefined;
-      if (!data?.splitPairId || !data.splitRole) return;
 
+      if (viewMode === 'simplified' && data?.isCluster && data.sccId) {
+        setExpandedSccIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(data.sccId!)) next.delete(data.sccId!);
+          else next.add(data.sccId!);
+          return next;
+        });
+        return;
+      }
+
+      if (!data?.splitPairId || !data.splitRole) return;
       const counterpartRole = data.splitRole === 'in' ? 'out' : 'in';
       const counterpartId = `${data.splitPairId}__${counterpartRole}`;
       const counterpart = getNode(counterpartId);
       if (!counterpart) return;
 
-      setCenter(counterpart.position.x + 125, counterpart.position.y + 40, {
+      setCenter(counterpart.position.x + NODE_WIDTH / 2, counterpart.position.y + NODE_HEIGHT / 2, {
         duration: 400,
         zoom: 1.4,
       });
     },
-    [getNode, setCenter],
+    [viewMode, getNode, setCenter],
   );
 
-  // Whether click-highlight is currently active.
   const clickActive = clickHighlightedNodeIds !== null;
 
   const onConnect = useCallback(
@@ -176,75 +518,85 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
-        nodes={nodes.map(node => {
-            const isSearchHit = highlightedNodeIds.has(node.id);
-            const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
-            const isFirstIntent = node.id === firstIntentNodeId;
-            const baseStyle = (node.style ?? {}) as React.CSSProperties;
+        nodes={nodes.map((node) => {
+          const isSearchHit = highlightedNodeIds.has(node.id);
+          const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
+          const isFirstIntent = node.id === firstIntentNodeId;
+          const isClusterNode = Boolean((node.data as FlowNode['data'] | undefined)?.isCluster);
+          const baseStyle = (node.style ?? {}) as React.CSSProperties;
 
-            if (isClickHighlighted) {
-              // Edge-selection active and this node is an endpoint → cyan highlight.
-              return {
-                ...node,
-                style: {
-                  ...baseStyle,
-                  background: '#cffafe',
-                  border: isSearchHit ? '2px solid #0e7490' : '2px solid #06b6d4',
-                  borderRadius: '4px',
-                  boxShadow: '0 0 0 4px rgba(6, 182, 212, 0.25)',
-                  zIndex: 10,
-                },
-              };
-            }
+          if (isClickHighlighted) {
+            return {
+              ...node,
+              style: {
+                ...baseStyle,
+                background: '#cffafe',
+                border: isSearchHit ? '2px solid #0e7490' : '2px solid #06b6d4',
+                borderRadius: '8px',
+                boxShadow: '0 0 0 4px rgba(6, 182, 212, 0.25)',
+                zIndex: 10,
+              },
+            };
+          }
 
-            if (clickActive) {
-              // Edge-selection active but this node is NOT part of the selection
-              // — make it transparent (keep visible as a ghost).
-              return {
-                ...node,
-                style: { ...baseStyle, opacity: 0.15 },
-              };
-            }
+          if (clickActive) {
+            return {
+              ...node,
+              style: { ...baseStyle, opacity: 0.15 },
+            };
+          }
 
-            if (isSearchHit) {
-              return {
-                ...node,
-                style: {
-                  ...baseStyle,
-                  background: '#fef08a',
-                  border: '2px solid #eab308',
-                  borderRadius: '4px',
-                  zIndex: 10,
-                },
-              };
-            }
+          if (isClusterNode) {
+            return {
+              ...node,
+              style: {
+                ...baseStyle,
+                background: '#ecfeff',
+                border: isSearchHit ? '2px solid #0891b2' : '2px solid #06b6d4',
+                borderRadius: '12px',
+                boxShadow: '0 0 0 4px rgba(6, 182, 212, 0.16)',
+                zIndex: isSearchHit ? 11 : 8,
+              },
+            };
+          }
 
-            if (isFirstIntent) {
-              // First-intent (entry-point) treatment: gold background, amber
-              // border, soft glow, and the ▶ arrow prefix in the label.
-              return {
-                ...node,
-                style: {
-                  ...baseStyle,
-                  background: '#fef3c7',
-                  border: '2px solid #f59e0b',
-                  borderRadius: '4px',
-                  boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.25)',
-                  zIndex: 10,
-                },
-              };
-            }
+          if (isSearchHit) {
+            return {
+              ...node,
+              style: {
+                ...baseStyle,
+                background: '#fef08a',
+                border: '2px solid #eab308',
+                borderRadius: '6px',
+                zIndex: 10,
+              },
+            };
+          }
 
-            return node;
-          })}
-        edges={edges.map(edge => {
-            if (!clickActive) return edge;
+          if (isFirstIntent) {
+            return {
+              ...node,
+              style: {
+                ...baseStyle,
+                background: '#fef3c7',
+                border: '2px solid #f59e0b',
+                borderRadius: '6px',
+                boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.25)',
+                zIndex: 10,
+              },
+            };
+          }
 
+          return node;
+        })}
+        edges={edges.map((edge) => {
+          const baseStyle = (edge.style ?? {}) as React.CSSProperties;
+          const edgeClass = (edge.data as FlowEdge['data'] | undefined)?.edgeClass;
+          const isIntra = edgeClass === 'intra-scc';
+
+          if (clickActive) {
             const isClickHighlighted = clickHighlightedEdgeIds!.has(edge.id);
-            const baseStyle = (edge.style ?? {}) as React.CSSProperties;
-
             if (isClickHighlighted) {
-              // Keep original method color, bump width, no animation.
               return {
                 ...edge,
                 style: { ...baseStyle, strokeWidth: 3, opacity: 1 },
@@ -252,14 +604,22 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
                 animated: false,
               } as Edge;
             }
-
-            // Selection active but this edge is NOT the selected one —
-            // make it transparent.
             return {
               ...edge,
               style: { ...baseStyle, opacity: 0.1 },
             } as Edge;
-          })}
+          }
+
+          if (!isIntra) return edge;
+          return {
+            ...edge,
+            style: {
+              ...baseStyle,
+              opacity: (baseStyle.opacity as number | undefined) ?? 0.55,
+              strokeDasharray: (baseStyle.strokeDasharray as string | undefined) ?? '5 3',
+            },
+          } as Edge;
+        })}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -278,13 +638,10 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
           onClick={handleMiniMapClick}
           nodeColor={(node) => {
             if (node.id === firstIntentNodeId) return '#f59e0b';
-            if (node.id === currentSearchNode?.id) return '#eab308';
+            if (node.id === resolveVisibleNodeId(currentSearchNode?.id ?? '')) return '#eab308';
             if (clickActive && clickHighlightedNodeIds!.has(node.id)) return '#06b6d4';
-            switch (node.type) {
-              case 'input': return '#61dafb';
-              case 'output': return '#ff6b6b';
-              default: return highlightedNodeIds.has(node.id) ? '#fef08a' : '#c8e6c9';
-            }
+            if ((node as any).data?.isCluster) return '#22d3ee';
+            return highlightedNodeIds.has(node.id) ? '#fef08a' : '#c8e6c9';
           }}
           nodeStrokeWidth={2}
           maskColor="rgba(0, 0, 0, 0.1)"
