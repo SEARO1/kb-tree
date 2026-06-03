@@ -199,18 +199,16 @@ specifically call out that node in the MiniMap.
 - "First intent" detection is purely static — it doesn't follow
   outgoing edges. If a KB has multiple root intents (no incoming
 
-### 2026-06-03 · Split high-degree intents into inbound/outbound halves
-**Status:** Added
+### 2026-06-03 · Split high-degree intents into per-edge copies
+**Status:** Modified
 **Files:** `src/components/parseKB.ts`, `src/components/Canvas.tsx`
-**Why:** Large intents with many inbound/outbound connections are hard to read; split the node into two halves so edges are separated by direction.
+**Why:** Further reduce visual density by splitting high-degree intents into one node per inbound edge and one node per outbound edge.
 **What:**
-- Action-based graph: split intents when one side has >= 4 connections and the other side > 0. Create `__in`/`__out` nodes with `(in)`/`(out)` label suffixes.
-- Route inbound edges to the `__in` half and outbound edges from the `__out` half. Add a dashed link between halves.
-- Node click jumps between the two halves to quickly navigate the pair.
-- Missing-intent check now treats split halves as present by mapping them back to the base intent ID.
+- Action-based graph: split intents when one side has >= 4 connections and the other side > 0. Create per-edge copies: `__in__{n}` and `__out__{n}` with indexed labels like `(in 1)` / `(out 1)`.
+- Route each inbound edge to a unique inbound copy and each outbound edge from a unique outbound copy (no pairing between sides).
+- Removed split-link edges and disabled split-pair jump-on-click behavior.
 **Notes / Mistakes:**
 - Split applies only in the action-based graph (not the tree layout).
-- The dashed `in -> out` link is purely visual and does not come from KB actions.
   edges) and the user wants a different entry, the helper will
   still pick the lowest-sortOrder root. Easy to swap to a
   BFS-from-roots heuristic later if needed.
