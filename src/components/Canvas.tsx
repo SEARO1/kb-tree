@@ -162,11 +162,20 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
-        nodes={nodes.map(node => {
-            const isSearchHit = highlightedNodeIds.has(node.id);
-            const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
-            const isFirstIntent = node.id === firstIntentNodeId;
-            const baseStyle = (node.style ?? {}) as React.CSSProperties;
+         nodes={nodes.map(node => {
+             const isSearchHit = highlightedNodeIds.has(node.id);
+             const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
+             const isFirstIntent = node.id === firstIntentNodeId;
+             const isMirror = Boolean((node.data as { isMirror?: boolean } | undefined)?.isMirror);
+             const baseStyle = {
+               ...((node.style ?? {}) as React.CSSProperties),
+               ...(isMirror ? {
+                 background: '#f8fafc',
+                 border: '2px dashed #94a3b8',
+                 borderRadius: '4px',
+                 fontStyle: 'italic',
+               } : {}),
+             } as React.CSSProperties;
 
             if (isClickHighlighted) {
               // Edge-selection active and this node is an endpoint → cyan highlight.
@@ -221,6 +230,11 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
               };
             }
 
+            // Mirror node: dashed border, light background, italic text
+            if (isMirror) {
+              return { ...node, style: baseStyle };
+            }
+
             return node;
           })}
         edges={edges.map(edge => {
@@ -263,15 +277,16 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
           zoomable
           onClick={handleMiniMapClick}
           nodeColor={(node) => {
-            if (node.id === firstIntentNodeId) return '#f59e0b';
-            if (node.id === currentSearchNode?.id) return '#eab308';
-            if (clickActive && clickHighlightedNodeIds!.has(node.id)) return '#06b6d4';
-            switch (node.type) {
-              case 'input': return '#61dafb';
-              case 'output': return '#ff6b6b';
-              default: return highlightedNodeIds.has(node.id) ? '#fef08a' : '#c8e6c9';
-            }
-          }}
+             if (node.id === firstIntentNodeId) return '#f59e0b';
+             if (node.id === currentSearchNode?.id) return '#eab308';
+             if (clickActive && clickHighlightedNodeIds!.has(node.id)) return '#06b6d4';
+             if ((node.data as { isMirror?: boolean } | undefined)?.isMirror) return '#94a3b8';
+             switch (node.type) {
+               case 'input': return '#61dafb';
+               case 'output': return '#ff6b6b';
+               default: return highlightedNodeIds.has(node.id) ? '#fef08a' : '#c8e6c9';
+             }
+           }}
           nodeStrokeWidth={2}
           maskColor="rgba(0, 0, 0, 0.1)"
           style={{ background: '#f5f5f5' }}

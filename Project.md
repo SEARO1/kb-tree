@@ -23,6 +23,29 @@ Each entry follows this shape:
 
 ## Entries
 
+### 2026-06-04 · Mirror return-parent cycle handling — corrected pipeline order
+**Status:** Modified
+**Files:** `src/components/parseKB.ts`, `src/components/Canvas.tsx`
+**Why:** Previous mirror implementation ran cycle detection on the canonical (pre-split) adjacency graph, which is wrong. Split nodes change node IDs, so a back-edge in the canonical graph does not correspond to the same back-edge after split routing. The pipeline must: split nodes first, then detect cycles on the split-resolved edge graph.
+**What:**
+- Extended `FlowNode.data` type with three new optional fields: `isMirror`, `mirrorOf` (exact split node ID the mirror represents, e.g. `A__in__2`), `mirrorOfBase` (canonical intent ID, e.g. `A`), to avoid regex at call sites.
+- Refactored `parseKBFormatActions` into a strict 9-step pipeline:
+  1–4. Existing: build adjacency → count degrees → decide splits → push split/non-split nodes.
+  5. New: walk canonical edges and assign split IDs → produce `splitResolvedEdges[]` (`{ sourceId, targetId, sourceBase, targetBase, meta }`).
+  6. New: DFS cycle detection on the split-resolved edge graph. Ancestor stack tracks **canonical base IDs** (`getBaseIntentId`) so that `A__in__1`, `A__out__2`, and plain `A` all count as the same ancestor. Back-edge condition: `targetBase` has count > 0 in ancestor map.
+  7. New: build `mirrorIdByTargetId` — one entry per unique cycle-return `targetId` (exact split node ID). Key: `targetId`, value: `${targetId}__mirror`.
+  8. New: push mirror nodes — label carries `(in N)` / `(out N)` suffix if the mirrored node is a split copy; stores both `mirrorOf` (exact) and `mirrorOfBase` (canonical) in `data`.
+  9. New: emit `FlowEdge`s — cycle-return edges point to their mirror target; all others unchanged.
+- Updated `checkAllIntentsAdded` to use `data.mirrorOfBase` directly (no regex needed at call site); kept `splitPairId` path and added regex fallback for any remaining split IDs.
+- Added mirror node visual style in `Canvas.tsx`: dashed border (`2px dashed #94a3b8`), light background (`#f8fafc`), italic font. Priority is below click-highlight, search-hit, and first-intent.
+- Added mirror color (`#94a3b8`) to MiniMap `nodeColor` callback.
+**Notes / Mistakes:**
+- Mirror ID scheme: `${exactTargetId}__mirror` — e.g. `A__in__2__mirror`, `A__mirror`. Distinct from split IDs (`__in__N`, `__out__N`); no collision possible.
+- Mirror reuse: multiple return edges to the same `targetId` share one mirror node.
+- Mirror nodes carry no outbound edges (sink markers only).
+- DFS traversal starts from explicit root intents first (parentId ROOT/null), then sweeps remaining unvisited split-graph nodes for determinism.
+- Only pre-existing unrelated ESLint warnings remain (`compareEdgeLabel`, `layoutActionGraph` unused helpers; `useMemo`/`rawJson` in `App.tsx`).
+
 ### 2026-06-01 · Initial modification log created
 **Status:** Added
 **Files:** `Project.md` (new file)
