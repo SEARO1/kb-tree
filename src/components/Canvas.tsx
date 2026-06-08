@@ -37,7 +37,8 @@ const getLayoutedElements = async (nodes: FlowNode[], edges: FlowEdge[], dir = '
       'elk.direction': isHorizontal ? 'RIGHT' : 'DOWN',
       'elk.spacing.nodeNode': '100',
       'elk.layered.spacing.nodeNodeBetweenLayers': '150',
-      'elk.edgeRouting': 'POLYLINE',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.spacing.edgeEdgeBetweenLayers': '20',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
     },
     children: nodes.map((n) => ({ ...n, width: 250, height: 80 })),
@@ -140,6 +141,22 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
     setSelectedEdgeId(null);
   }, []);
 
+  const handleNodeClick = useCallback(
+    (_evt: React.MouseEvent, node: Node) => {
+      const nodeData = node.data as { isProxy?: boolean; originalId?: string } | undefined;
+      if (!nodeData?.isProxy || !nodeData.originalId) return;
+
+      const originalNode = getNode(nodeData.originalId);
+      if (!originalNode) return;
+
+      setCenter(originalNode.position.x + 125, originalNode.position.y + 40, {
+        duration: 500,
+        zoom: 1.5,
+      });
+    },
+    [getNode, setCenter],
+  );
+
   // Whether click-highlight is currently active.
   const clickActive = clickHighlightedNodeIds !== null;
 
@@ -162,7 +179,16 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
             const isSearchHit = highlightedNodeIds.has(node.id);
             const isClickHighlighted = clickActive && clickHighlightedNodeIds!.has(node.id);
             const isFirstIntent = node.id === firstIntentNodeId;
+            const isProxy = !!(node.data as { isProxy?: boolean } | undefined)?.isProxy;
             const baseStyle = (node.style ?? {}) as React.CSSProperties;
+            const proxyStyle: React.CSSProperties = isProxy
+              ? {
+                  background: '#e9eff8',
+                  border: '2px dashed #94a3b8',
+                  borderRadius: '4px',
+                  opacity: 0.85,
+                }
+              : {};
 
             if (isClickHighlighted) {
               // Edge-selection active and this node is an endpoint → cyan highlight.
@@ -170,6 +196,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
                 ...node,
                 style: {
                   ...baseStyle,
+                  ...proxyStyle,
                   background: '#cffafe',
                   border: isSearchHit ? '2px solid #0e7490' : '2px solid #06b6d4',
                   borderRadius: '4px',
@@ -184,7 +211,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
               // — make it transparent (keep visible as a ghost).
               return {
                 ...node,
-                style: { ...baseStyle, opacity: 0.15 },
+                style: { ...baseStyle, ...proxyStyle, opacity: 0.15 },
               };
             }
 
@@ -193,6 +220,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
                 ...node,
                 style: {
                   ...baseStyle,
+                  ...proxyStyle,
                   background: '#fef08a',
                   border: '2px solid #eab308',
                   borderRadius: '4px',
@@ -208,11 +236,22 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
                 ...node,
                 style: {
                   ...baseStyle,
+                  ...proxyStyle,
                   background: '#fef3c7',
                   border: '2px solid #f59e0b',
                   borderRadius: '4px',
                   boxShadow: '0 0 0 4px rgba(245, 158, 11, 0.25)',
                   zIndex: 10,
+                },
+              };
+            }
+
+            if (isProxy) {
+              return {
+                ...node,
+                style: {
+                  ...baseStyle,
+                  ...proxyStyle,
                 },
               };
             }
@@ -245,6 +284,7 @@ function CanvasInner({ initialNodes, initialEdges, searchResults = [], currentRe
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
         onPaneClick={handlePaneClick}
         fitView

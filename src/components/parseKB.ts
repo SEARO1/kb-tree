@@ -3,7 +3,13 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
-  data: { label: string; rawData?: any; isFirstIntent?: boolean };
+  data: {
+    label: string;
+    rawData?: any;
+    isFirstIntent?: boolean;
+    isProxy?: boolean;
+    originalId?: string;
+  };
   type?: string;
 }
 
@@ -149,45 +155,101 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const intentMap = new Map<string, KBIntent>();
   for (const intent of intents) intentMap.set(intent.intentId, intent);
 
-// Add `methods: Set<string>` to track the method for the edge
-const adjacency = new Map<string, Map<string, { labels: Set<string>; methods: Set<string>; order: number }>>();
-const usedIntentIds = new Set<string>();
-let edgeOrder = 0;
+  const adjacency = new Map<string, Map<string, { labels: Set<string>; methods: Set<string>; order: number }>>();
+  const usedIntentIds = new Set<string>();
+  const parentMap = new Map<string, string | null>();
+  const depthCache = new Map<string, number>();
+  const proxyNodeMeta = new Map<string, { originalId: string; order: number }>();
+  const rawActionEdges: Array<{ source: string; target: string; label: string; method: string; order: number }> = [];
+  let edgeOrder = 0;
+  let proxyOrder = 0;
 
-for (const action of actions) {
-  const sourceIntentId = action.intentId;
-  if (!sourceIntentId || !intentMap.has(sourceIntentId)) continue;
+  for (const intent of intents) {
+    parentMap.set(intent.intentId, intent.parentId ?? null);
+  }
 
-  const payload = normalizePayload(action.payload);
-  if (!payload) continue;
+  const getDepth = (intentId: string): number => {
+    const cached = depthCache.get(intentId);
+    if (cached != null) return cached;
 
-  const redirects = getActionRedirects(payload, intentMap);
+    let depth = 0;
+    let cursor: string | null | undefined = intentId;
+    const visited = new Set<string>();
 
-  for (const redirect of redirects) {
-    if (!redirect.targetId) continue;
-    if (redirect.targetId === sourceIntentId) continue;
-    if (!intentMap.has(redirect.targetId)) continue;
+    while (cursor && cursor !== 'ROOT' && !visited.has(cursor)) {
+      visited.add(cursor);
+      const parent = parentMap.get(cursor);
+      if (!parent || parent === 'ROOT') break;
+      depth += 1;
+      cursor = parent;
+    }
 
-    let outgoing = adjacency.get(sourceIntentId);
+    depthCache.set(intentId, depth);
+    return depth;
+  };
+
+  for (const action of actions) {
+    const sourceIntentId = action.intentId;
+    if (!sourceIntentId || !intentMap.has(sourceIntentId)) continue;
+
+    const payload = normalizePayload(action.payload);
+    if (!payload) continue;
+
+    const redirects = getActionRedirects(payload, intentMap);
+
+    for (const redirect of redirects) {
+      if (!redirect.targetId) continue;
+      if (redirect.targetId === sourceIntentId) continue;
+      if (!intentMap.has(redirect.targetId)) continue;
+
+      rawActionEdges.push({
+        source: sourceIntentId,
+        target: redirect.targetId,
+        label: redirect.label,
+        method: redirect.method,
+        order: edgeOrder++,
+      });
+    }
+  }
+
+  const cyclicEdgePairs = findCyclicEdgePairs(
+    rawActionEdges.map((edge) => ({ source: edge.source, target: edge.target })),
+  );
+
+  for (const edge of rawActionEdges) {
+    const isCyclicEdge = cyclicEdgePairs.has(`${edge.source}->${edge.target}`);
+    const isUpwardJump = getDepth(edge.target) < getDepth(edge.source);
+    const shouldUseProxy = isCyclicEdge || isUpwardJump;
+    const effectiveTargetId = shouldUseProxy
+      ? `${edge.target}-proxy-${edge.source}`
+      : edge.target;
+
+    if (shouldUseProxy && !proxyNodeMeta.has(effectiveTargetId)) {
+      proxyNodeMeta.set(effectiveTargetId, {
+        originalId: edge.target,
+        order: proxyOrder++,
+      });
+    }
+
+    let outgoing = adjacency.get(edge.source);
     if (!outgoing) {
       outgoing = new Map();
-      adjacency.set(sourceIntentId, outgoing);
+      adjacency.set(edge.source, outgoing);
     }
 
-    let entry = outgoing.get(redirect.targetId);
+    let entry = outgoing.get(effectiveTargetId);
     if (!entry) {
-      // Initialize the methods Set
-      entry = { labels: new Set(), methods: new Set(), order: edgeOrder++ };
-      outgoing.set(redirect.targetId, entry);
+      entry = { labels: new Set(), methods: new Set(), order: edge.order };
+      outgoing.set(effectiveTargetId, entry);
     }
 
-    entry.labels.add(redirect.label);
-    entry.methods.add(redirect.method); // Save the method
+    entry.labels.add(edge.label);
+    entry.methods.add(edge.method);
 
-    usedIntentIds.add(sourceIntentId);
-    usedIntentIds.add(redirect.targetId);
+    usedIntentIds.add(edge.source);
+    usedIntentIds.add(edge.target);
+    if (shouldUseProxy) usedIntentIds.add(effectiveTargetId);
   }
-}
 
   for (const intent of intents) {
     if ((intent.parentId === 'ROOT' || intent.parentId == null) && adjacency.has(intent.intentId)) {
@@ -213,6 +275,28 @@ for (const action of actions) {
         label: `${arrow}${intent.intentId}\n${intent.intentName}`,
         rawData: intent,
         isFirstIntent: isFirst,
+      },
+      type: 'default',
+    });
+  }
+
+  const proxyNodes = [...proxyNodeMeta.entries()].sort((a, b) => a[1].order - b[1].order);
+  for (const [proxyId, meta] of proxyNodes) {
+    const originalIntent = intentMap.get(meta.originalId);
+    if (!originalIntent) continue;
+
+    const originalIsFirst = originalIntent.intentId === firstIntentId;
+    const originalArrow = originalIsFirst ? '▶ ' : '';
+    const originalLabel = `${originalArrow}${originalIntent.intentId}\n${originalIntent.intentName}`;
+
+    nodes.push({
+      id: proxyId,
+      position: { x: 0, y: 0 },
+      data: {
+        label: `🔗 ${originalLabel}`,
+        rawData: originalIntent,
+        isProxy: true,
+        originalId: originalIntent.intentId,
       },
       type: 'default',
     });
@@ -252,6 +336,81 @@ for (const action of actions) {
       });
     }
   }
+}
+
+function findCyclicEdgePairs(
+  edges: Array<{ source: string; target: string }>,
+): Set<string> {
+  const adjacency = new Map<string, Set<string>>();
+  const nodes = new Set<string>();
+
+  for (const { source, target } of edges) {
+    nodes.add(source);
+    nodes.add(target);
+    let outgoing = adjacency.get(source);
+    if (!outgoing) {
+      outgoing = new Set();
+      adjacency.set(source, outgoing);
+    }
+    outgoing.add(target);
+  }
+
+  let index = 0;
+  const indexMap = new Map<string, number>();
+  const lowLink = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const cyclicEdgeKeys = new Set<string>();
+
+  const strongConnect = (node: string) => {
+    indexMap.set(node, index);
+    lowLink.set(node, index);
+    index += 1;
+    stack.push(node);
+    onStack.add(node);
+
+    for (const neighbor of adjacency.get(node) ?? []) {
+      if (!indexMap.has(neighbor)) {
+        strongConnect(neighbor);
+        lowLink.set(node, Math.min(lowLink.get(node)!, lowLink.get(neighbor)!));
+      } else if (onStack.has(neighbor)) {
+        lowLink.set(node, Math.min(lowLink.get(node)!, indexMap.get(neighbor)!));
+      }
+    }
+
+    if (lowLink.get(node) !== indexMap.get(node)) return;
+
+    const component: string[] = [];
+    while (stack.length > 0) {
+      const popped = stack.pop()!;
+      onStack.delete(popped);
+      component.push(popped);
+      if (popped === node) break;
+    }
+
+    if (component.length > 1) {
+      const componentSet = new Set(component);
+      for (const source of component) {
+        for (const target of adjacency.get(source) ?? []) {
+          if (componentSet.has(target)) {
+            cyclicEdgeKeys.add(`${source}->${target}`);
+          }
+        }
+      }
+      return;
+    }
+
+    const only = component[0];
+    if ((adjacency.get(only) ?? new Set()).has(only)) {
+      cyclicEdgeKeys.add(`${only}->${only}`);
+    }
+  };
+
+  for (const node of nodes) {
+    if (!indexMap.has(node)) strongConnect(node);
+  }
+
+  return cyclicEdgeKeys;
 }
 
 function normalizePayload(payload: KBAction['payload']): KBActionPayload | null {
