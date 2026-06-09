@@ -122,6 +122,9 @@ export function parseKBToGraph(
 ): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
+  if (rawJson == null || typeof rawJson !== 'object') {
+    return { nodes, edges };
+  }
   const kb = rawJson as KBJson;
 
   const hasIntents =

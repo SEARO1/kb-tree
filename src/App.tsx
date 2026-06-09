@@ -100,16 +100,14 @@ function App() {
       <div className="top-bar">
         <div className="app-header">
           <h1>Knowledge Base Visualizer</h1>
-        </div>
-
-        <div className="parser-options" title="KB parse workflow options">
+          <div className="parser-options" title="KB parse workflow options">
           <label className="option-item">
             <input
               type="checkbox"
               checked={splitInboundOutbound}
               onChange={(e) => setSplitInboundOutbound(e.target.checked)}
             />
-            <span>Split in/outbound node</span>
+            <span>Split in/out node</span>
           </label>
           <label className="option-item">
             <input
@@ -117,7 +115,7 @@ function App() {
               checked={separateMultiNode}
               onChange={(e) => setSeparateMultiNode(e.target.checked)}
             />
-            <span>Separate multi node</span>
+            <span>Sep multi node</span>
           </label>
           <label className="option-item">
             <input
@@ -125,9 +123,12 @@ function App() {
               checked={makeAcyclic}
               onChange={(e) => setMakeAcyclic(e.target.checked)}
             />
-            <span>Cyclic to acyclic</span>
+            <span>Cyclic2acyclic</span>
           </label>
         </div>
+        </div>
+
+        
 
         {checkResult && (
           <div className={`intent-check ${checkResult.allAdded ? 'all-added' : 'missing'}`}>
