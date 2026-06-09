@@ -106,11 +106,20 @@ export interface KBJson {
   [key: string]: any;
 }
 
+export interface ParseKBOptions {
+  splitInboundOutbound?: boolean;
+  separateMultiNode?: boolean;
+  makeAcyclic?: boolean;
+}
+
 // Layout constants now live in ./parseKBLayout.
 
 // ─── Main entry point ────────────────────────────────────────────────────────
 
-export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEdge[] } {
+export function parseKBToGraph(
+  rawJson: any,
+  options: ParseKBOptions = {},
+): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
   const kb = rawJson as KBJson;
@@ -120,7 +129,7 @@ export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEd
   const hasActions = kb.actions && Array.isArray(kb.actions) && kb.actions.length > 0;
 
   if (hasIntents && hasActions) {
-    parseKBFormatActions(kb, nodes, edges);
+    parseKBFormatActions(kb, nodes, edges, options);
     return { nodes, edges };
   }
 
@@ -172,7 +181,16 @@ export function parseKBToGraph(rawJson: any): { nodes: FlowNode[]; edges: FlowEd
 //   4. Each (source → target) becomes a labelled edge in the graph
 //   5. Intents are sorted by sortOrder / intentId before rendering
 
-function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]): void {
+function parseKBFormatActions(
+  kb: KBJson,
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  options: ParseKBOptions,
+): void {
+  const splitInboundOutbound = options.splitInboundOutbound ?? true;
+  const separateMultiNode = options.separateMultiNode ?? true;
+  const makeAcyclic = options.makeAcyclic ?? true;
+
   const { intents, actions } = sortKBEntities(kb);
   const intentMap = buildIntentMap(intents);
 
@@ -188,7 +206,9 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const firstIntentId = pickFirstIntentId(sortedUsedIntents);
 
   const { inboundCount, outboundCount } = countDegrees(adjacency);
-  const splitIntentIds = decideSplitIntents(sortedUsedIntents, inboundCount, outboundCount);
+  const splitIntentIds = splitInboundOutbound
+    ? decideSplitIntents(sortedUsedIntents, inboundCount, outboundCount)
+    : new Set<string>();
 
   const builtSplitNodes = buildSplitNodes(
     sortedUsedIntents,
@@ -196,30 +216,41 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     inboundCount,
     outboundCount,
     firstIntentId,
+    separateMultiNode,
   );
   for (const n of builtSplitNodes) nodes.push(n);
 
   // ── Step 5: resolve canonical edges into split-node edges ──────────────────
-  const splitResolvedEdges: SplitEdge[] = resolveSplitEdges(adjacency, splitIntentIds);
+  const splitResolvedEdges: SplitEdge[] = resolveSplitEdges(
+    adjacency,
+    splitIntentIds,
+    separateMultiNode,
+  );
 
   // ── Step 6: DFS cycle detection on the split-resolved edge graph ────────────
   // Ancestor tracking uses canonical base IDs so that A__in__1 and A__out__2
   // are both considered "A" in the path, which triggers a cycle when any form
   // of A appears as a descendant's outbound target.
-  const cycleReturnKeys = detectCycles(
-    splitResolvedEdges,
-    sortedUsedIntents,
-    splitIntentIds,
-    compareIntentId,
-  );
+  const cycleReturnKeys = makeAcyclic
+    ? detectCycles(
+        splitResolvedEdges,
+        sortedUsedIntents,
+        splitIntentIds,
+        compareIntentId,
+      )
+    : new Set<string>();
 
   // ── Step 7: build mirror map keyed by exact split targetId ─────────────────
   // Mirror ID = `${exactTargetId}__mirror` — one per unique return target.
-  const mirrorIdByTargetId = buildMirrorMap(cycleReturnKeys);
+  const mirrorIdByTargetId = makeAcyclic
+    ? buildMirrorMap(cycleReturnKeys)
+    : new Map<string, string>();
 
   // ── Step 8: push mirror nodes ───────────────────────────────────────────────
-  for (const n of buildMirrorNodes(mirrorIdByTargetId, intentMap, compareIntentId)) {
-    nodes.push(n);
+  if (makeAcyclic) {
+    for (const n of buildMirrorNodes(mirrorIdByTargetId, intentMap, compareIntentId)) {
+      nodes.push(n);
+    }
   }
 
   // ── Step 9: emit final FlowEdges ────────────────────────────────────────────

@@ -77,6 +77,7 @@ export function buildSplitNodes(
   inboundCount: Map<string, number>,
   outboundCount: Map<string, number>,
   firstIntentId: string | null,
+  separateMultiNode = true,
 ): FlowNode[] {
   const out: FlowNode[] = [];
 
@@ -99,8 +100,8 @@ export function buildSplitNodes(
       continue;
     }
 
-    const inboundTotal = inboundCount.get(intent.intentId) ?? 0;
-    const outboundTotal = outboundCount.get(intent.intentId) ?? 0;
+    const inboundTotal = separateMultiNode ? (inboundCount.get(intent.intentId) ?? 0) : 1;
+    const outboundTotal = separateMultiNode ? (outboundCount.get(intent.intentId) ?? 0) : 1;
 
     for (let index = 1; index <= inboundTotal; index += 1) {
       const prefix = isFirst && index === 1 ? arrow : '';
@@ -151,6 +152,7 @@ export function buildSplitNodes(
 export function resolveSplitEdges(
   adjacency: Adjacency,
   splitIntentIds: Set<string>,
+  separateMultiNode = true,
 ): SplitEdge[] {
   const outboundIndexBySource = new Map<string, number>();
   const inboundIndexByTarget = new Map<string, number>();
@@ -161,13 +163,13 @@ export function resolveSplitEdges(
     for (const [target, meta] of sortedTargets) {
       let sourceId = source;
       if (splitIntentIds.has(source)) {
-        const idx = (outboundIndexBySource.get(source) ?? 0) + 1;
+        const idx = separateMultiNode ? (outboundIndexBySource.get(source) ?? 0) + 1 : 1;
         outboundIndexBySource.set(source, idx);
         sourceId = getSplitNodeId(source, 'out', idx);
       }
       let targetId = target;
       if (splitIntentIds.has(target)) {
-        const idx = (inboundIndexByTarget.get(target) ?? 0) + 1;
+        const idx = separateMultiNode ? (inboundIndexByTarget.get(target) ?? 0) + 1 : 1;
         inboundIndexByTarget.set(target, idx);
         targetId = getSplitNodeId(target, 'in', idx);
       }

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import JsonUploader from './components/JsonUploader';
 import Canvas from './components/Canvas';
 import { parseKBToGraph, checkAllIntentsAdded, IntentCheckResult, FlowNode, FlowEdge } from './components/parseKB';
@@ -13,15 +13,26 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<FlowNode[]>([]);
   const [currentResultIndex, setCurrentResultIndex] = useState(0);
+  const [splitInboundOutbound, setSplitInboundOutbound] = useState(true);
+  const [separateMultiNode, setSeparateMultiNode] = useState(true);
+  const [makeAcyclic, setMakeAcyclic] = useState(true);
+
+  const runParse = useCallback((data: any) => {
+    const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data, {
+      splitInboundOutbound,
+      separateMultiNode,
+      makeAcyclic,
+    });
+    setNodes(newNodes);
+    setEdges(newEdges);
+    const result = checkAllIntentsAdded(data, newNodes);
+    setCheckResult(result);
+  }, [splitInboundOutbound, separateMultiNode, makeAcyclic]);
 
   const handleJsonLoaded = (data: any) => {
     try {
-      const { nodes: newNodes, edges: newEdges } = parseKBToGraph(data);
-      setNodes(newNodes);
-      setEdges(newEdges);
       setRawJson(data);
-      const result = checkAllIntentsAdded(data, newNodes);
-      setCheckResult(result);
+      runParse(data);
       setShowUploader(false);
       setSearchQuery('');
       setSearchResults([]);
@@ -30,6 +41,13 @@ function App() {
       alert("Invalid JSON format");
     }
   };
+
+  useEffect(() => {
+    if (!rawJson) return;
+    runParse(rawJson);
+    setSearchResults([]);
+    setCurrentResultIndex(0);
+  }, [rawJson, runParse]);
 
   const handleSearch = useCallback(() => {
     if (!searchQuery.trim()) {
@@ -82,6 +100,33 @@ function App() {
       <div className="top-bar">
         <div className="app-header">
           <h1>Knowledge Base Visualizer</h1>
+        </div>
+
+        <div className="parser-options" title="KB parse workflow options">
+          <label className="option-item">
+            <input
+              type="checkbox"
+              checked={splitInboundOutbound}
+              onChange={(e) => setSplitInboundOutbound(e.target.checked)}
+            />
+            <span>Split in/outbound node</span>
+          </label>
+          <label className="option-item">
+            <input
+              type="checkbox"
+              checked={separateMultiNode}
+              onChange={(e) => setSeparateMultiNode(e.target.checked)}
+            />
+            <span>Separate multi node</span>
+          </label>
+          <label className="option-item">
+            <input
+              type="checkbox"
+              checked={makeAcyclic}
+              onChange={(e) => setMakeAcyclic(e.target.checked)}
+            />
+            <span>Cyclic to acyclic</span>
+          </label>
         </div>
 
         {checkResult && (

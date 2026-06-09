@@ -39,6 +39,31 @@ body {
   margin: 0;
 }
 
+.parser-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid #e7e7e7;
+  border-radius: 10px;
+  background: #ffffff;
+  flex-wrap: wrap;
+}
+
+.option-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #333;
+  cursor: pointer;
+  user-select: none;
+}
+
+.option-item input {
+  margin: 0;
+}
+
 /* Intent check badge (top-right) */
 .intent-check {
   margin-left: auto;
