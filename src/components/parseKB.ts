@@ -162,6 +162,7 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const usedIntentIds = new Set<string>();
   let edgeOrder = 0;
 
+  // 1. Build Adjacency List
   for (const action of actions) {
     const sourceIntentId = action.intentId;
     if (!sourceIntentId || !intentMap.has(sourceIntentId)) continue;
@@ -205,15 +206,48 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
   const sortedUsedIntents = intents.filter((intent) => usedIntentIds.has(intent.intentId));
   const firstIntentId = pickFirstIntentId(sortedUsedIntents);
 
+  // 2. CYCLE DETECTION (DFS)
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+  const backEdges = new Set<string>();
+
+  function detectCycles(nodeId: string) {
+    visited.add(nodeId);
+    recursionStack.add(nodeId);
+
+    const outgoing = adjacency.get(nodeId);
+    if (outgoing) {
+      for (const targetId of outgoing.keys()) {
+        if (!visited.has(targetId)) {
+          detectCycles(targetId);
+        } else if (recursionStack.has(targetId)) {
+          // Back-edge detected!
+          backEdges.add(`${nodeId}->${targetId}`);
+        }
+      }
+    }
+    recursionStack.delete(nodeId);
+  }
+
+  if (firstIntentId) detectCycles(firstIntentId);
+  for (const intent of sortedUsedIntents) {
+    if (!visited.has(intent.intentId)) detectCycles(intent.intentId);
+  }
+
+  // 3. Calculate Inbound/Outbound Counts (Ignoring Back-Edges for Inbound)
   const inboundCount = new Map<string, number>();
   const outboundCount = new Map<string, number>();
+  
   for (const [source, targets] of adjacency) {
-    outboundCount.set(source, targets.size);
+    outboundCount.set(source, targets.size); 
     for (const target of targets.keys()) {
-      inboundCount.set(target, (inboundCount.get(target) ?? 0) + 1);
+      if (!backEdges.has(`${source}->${target}`)) {
+        inboundCount.set(target, (inboundCount.get(target) ?? 0) + 1);
+      }
     }
   }
 
+  // 4. Determine Split Nodes
   const splitIntentIds = new Set<string>();
   for (const intent of sortedUsedIntents) {
     const inbound = inboundCount.get(intent.intentId) ?? 0;
@@ -227,6 +261,7 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     return `${intentId}__${role}__${index}`;
   };
 
+  // 5. Generate Standard Nodes
   for (const intent of sortedUsedIntents) {
     const isSplit = splitIntentIds.has(intent.intentId);
     const isFirst = intent.intentId === firstIntentId;
@@ -280,6 +315,7 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     }
   }
 
+  // 6. Generate Edges & Unrolled Mirrored Nodes
   const outboundIndexBySource = new Map<string, number>();
   const inboundIndexByTarget = new Map<string, number>();
 
@@ -289,17 +325,11 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
     for (const [target, meta] of sortedTargets) {
       let strokeColor = '#b1b1b7';
 
-      if (meta.methods.has('dtmf')) {
-        strokeColor = '#10b981';
-      } else if (meta.methods.has('noh')) {
-        strokeColor = '#f43f5e';
-      } else if (meta.methods.has('followUp')) {
-        strokeColor = '#f59e0b';
-      } else if (meta.methods.has('redirect')) {
-        strokeColor = '#3b82f6';
-      } else if (meta.methods.has('procArg')) {
-        strokeColor = '#8b5cf6';
-      }
+      if (meta.methods.has('dtmf')) strokeColor = '#10b981';
+      else if (meta.methods.has('noh')) strokeColor = '#f43f5e';
+      else if (meta.methods.has('followUp')) strokeColor = '#f59e0b';
+      else if (meta.methods.has('redirect')) strokeColor = '#3b82f6';
+      else if (meta.methods.has('procArg')) strokeColor = '#8b5cf6';
 
       let sourceId = source;
       if (splitIntentIds.has(source)) {
@@ -307,6 +337,41 @@ function parseKBFormatActions(kb: KBJson, nodes: FlowNode[], edges: FlowEdge[]):
         outboundIndexBySource.set(source, nextIndex);
         sourceId = getSplitNodeId(source, 'out', nextIndex);
       }
+
+      // --- CYCLE BREAKING: CREATE MIRRORED NODES ---
+      if (backEdges.has(`${source}->${target}`)) {
+        const originalIntent = intentMap.get(target);
+        if (originalIntent) {
+          // Unique ID for the mirrored node so React Flow doesn't complain
+          const mirrorNodeId = `${target}__mirror_${sourceId}`;
+          
+          // Create a mirrored node that looks exactly like the target, but marked with '
+          nodes.push({
+            id: mirrorNodeId,
+            position: { x: 0, y: 0 },
+            data: {
+              label: `${originalIntent.intentId}'\n${originalIntent.intentName}`,
+              rawData: originalIntent,
+            },
+            type: 'default',
+          });
+
+          // Point the edge to the mirrored node instead of looping backwards
+          edges.push({
+            id: `${sourceId}-${mirrorNodeId}`,
+            source: sourceId,
+            target: mirrorNodeId,
+            type: 'straight',
+            animated: true, // Keep it animated to indicate it's a special flow/loop
+            label: [...meta.labels].join(', '),
+            style: { stroke: strokeColor, strokeWidth: 2, strokeDasharray: '5,5' },
+            labelBgStyle: { fill: '#ffffff', color: '#fff', fillOpacity: 0.8 },
+            labelStyle: { fill: strokeColor, fontWeight: 700 },
+          });
+        }
+        continue; // Skip standard edge creation to prevent the cycle
+      }
+      // ---------------------------------------------
 
       let targetId = target;
       if (splitIntentIds.has(target)) {
