@@ -8,6 +8,7 @@ import {
   getActionRedirects,
   pickFirstIntentId,
   pickEdgeColor,
+  compareIntent
 } from './parseKBActions';
 import {
   decideSplitIntents,

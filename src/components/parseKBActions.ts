@@ -28,7 +28,7 @@ export function sortKBEntities(kb: KBJson): { intents: KBIntent[]; actions: KBAc
   return { intents, actions };
 }
 
-function compareIntent(a: KBIntent, b: KBIntent): number {
+export function compareIntent(a: KBIntent, b: KBIntent): number {
   return (
     (a.sortOrder ?? Number.MAX_SAFE_INTEGER) -
       (b.sortOrder ?? Number.MAX_SAFE_INTEGER) ||
